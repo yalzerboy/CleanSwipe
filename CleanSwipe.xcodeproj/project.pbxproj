@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		EEAA6BDF2E0F3D8200AAE69D /* onboarding_video.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = EEAA6BDE2E0F3D8200AAE69D /* onboarding_video.mp4 */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		EE1AF8B42E0F30A9006C633D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +31,7 @@
 		EE1AF8A32E0F30A9006C633D /* CleanSwipe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CleanSwipe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE1AF8B32E0F30A9006C633D /* CleanSwipeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CleanSwipeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE1AF8BD2E0F30A9006C633D /* CleanSwipeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CleanSwipeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EEAA6BDE2E0F3D8200AAE69D /* onboarding_video.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = onboarding_video.mp4; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -79,6 +84,7 @@
 				EE1AF8B62E0F30A9006C633D /* CleanSwipeTests */,
 				EE1AF8C02E0F30A9006C633D /* CleanSwipeUITests */,
 				EE1AF8A42E0F30A9006C633D /* Products */,
+				EEAA6BDE2E0F3D8200AAE69D /* onboarding_video.mp4 */,
 			);
 			sourceTree = "<group>";
 		};
@@ -212,6 +218,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EEAA6BDF2E0F3D8200AAE69D /* onboarding_video.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -398,6 +405,7 @@
 				DEVELOPMENT_ASSET_PATHS = "\"CleanSwipe/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "CleanSwipe needs access to your photos to help you organize and clean up your photo library by swiping to keep or delete photos.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -426,6 +434,7 @@
 				DEVELOPMENT_ASSET_PATHS = "\"CleanSwipe/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "CleanSwipe needs access to your photos to help you organize and clean up your photo library by swiping to keep or delete photos.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
