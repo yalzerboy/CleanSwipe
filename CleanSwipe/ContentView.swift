@@ -244,24 +244,47 @@ struct ContentView: View {
                     )
             }
             
-            // Instructions
+            // Action buttons and instructions
             VStack(spacing: 8) {
-                HStack(spacing: 30) {
-                    Label("Delete", systemImage: "arrow.left")
-                        .foregroundColor(.red)
-                        .font(.system(size: 16, weight: .medium))
+                HStack(spacing: 80) {
+                    Button(action: {
+                        handleSwipe(action: .delete)
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("Delete")
+                                .font(.system(size: 14, weight: .medium))
+                        }
+                        .foregroundColor(.white)
+                        .frame(width: 70, height: 36)
+                        .background(Color.red)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .disabled(isUndoing)
                     
-                    Label("Keep", systemImage: "arrow.right")
-                        .foregroundColor(.green)
-                        .font(.system(size: 16, weight: .medium))
+                    Button(action: {
+                        handleSwipe(action: .keep)
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("Keep")
+                                .font(.system(size: 14, weight: .medium))
+                        }
+                        .foregroundColor(.white)
+                        .frame(width: 70, height: 36)
+                        .background(Color.green)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .disabled(isUndoing)
                 }
-                .padding(.horizontal)
                 
                 Text("Swipe right to keep, left to delete")
                     .font(.system(size: 14, weight: .regular))
                     .foregroundColor(.secondary)
             }
-            .padding(.bottom, 80) // Make room for progress bar
+            .padding(.bottom, 60) // Reduced padding to give more space to photo
         }
         .padding()
         .onAppear {
@@ -359,7 +382,7 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 30)
+                .padding(.bottom, 120) // Extra padding to avoid progress bar overlap
             }
         }
     }
@@ -839,7 +862,13 @@ struct ContentView: View {
             return
         }
         
-        // Show continue screen for next batch
+        // Skip continue screen if no photos were deleted
+        if lastBatchDeletedCount == 0 {
+            proceedToNextBatch()
+            return
+        }
+        
+        // Show continue screen for next batch (only when photos were deleted)
         showingContinueScreen = true
     }
     
