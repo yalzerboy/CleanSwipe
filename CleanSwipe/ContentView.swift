@@ -152,9 +152,16 @@ struct ContentView: View {
                                 Text("Swipes")
                                     .font(.system(size: 10, weight: .regular))
                                     .foregroundColor(.secondary)
-                                Text("\(purchaseManager.dailySwipeCount)/10")
+                                let totalUsed = purchaseManager.dailySwipeCount
+                                let totalAvailable = 10 + purchaseManager.rewardedSwipesRemaining
+                                Text("\(totalUsed)/\(totalAvailable)")
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundColor(purchaseManager.canSwipe ? .primary : .red)
+                                if purchaseManager.rewardedSwipesRemaining > 0 {
+                                    Text("+\(purchaseManager.rewardedSwipesRemaining) bonus")
+                                        .font(.system(size: 8, weight: .regular))
+                                        .foregroundColor(.green)
+                                }
                             }
                         }
                         
@@ -732,6 +739,11 @@ struct ContentView: View {
                 Text("Used today: \(purchaseManager.dailySwipeCount)/10")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.secondary)
+                if purchaseManager.rewardedSwipesRemaining > 0 {
+                    Text("Bonus swipes remaining: \(purchaseManager.rewardedSwipesRemaining)")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.green)
+                }
             }
             
             VStack(spacing: 16) {
