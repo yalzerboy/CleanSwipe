@@ -1,0 +1,15 @@
+SwipeWipe
+
+- if the user doesn't allow access to photos, we need to show the first things first screen every time they open the app and everytime they try and SwipeWipe
+- if they dont sign up to free trial or are not a paid member, we should show the try for free screen everytime they open the app.
+- if they don't sign up to free trial or are not a paid member, they only get 10 free swipes a day and it should show an advert after every 5. we can keep placeholder ad for now.
+- we should add an option called On this Day which is only for photos on this day
+- we should send a reminder every day at 11am local time for the user to clean swipe their photos
+- we should add more view filters in the menu going by Month Year e.g. May '23, Apr '23
+- have a settings which lets them choose from just photos or photos and videos
+- have a filter view that is the screenshots folder.
+- in the menu there should always be a subscribe button if it's not a pro member or on trial
+- have a my stats option which shows how many photos they've deleted and how much storage they've saved. also how many days they've swiped for.
+- have an FAQ in the menu with some guides.
+- have a rate us option.
+- instead of immediately showing the photo swiping screen, have a permanent menu where the user has to select a filter view in order to start swiping.

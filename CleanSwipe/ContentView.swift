@@ -8,13 +8,18 @@
 import SwiftUI
 import Photos
 import CoreLocation
+import AVKit
 
 struct ContentView: View {
+    let contentType: ContentType
+    @Binding var showTutorial: Bool
     @State private var photos: [PHAsset] = []
     @State private var currentBatch: [PHAsset] = []
     @State private var currentPhotoIndex = 0
     @State private var batchIndex = 0
     @State private var currentImage: UIImage?
+    @State private var currentVideoPlayer: AVPlayer?
+    @State private var isCurrentAssetVideo = false
     @State private var currentPhotoDate: Date?
     @State private var currentPhotoLocation: String?
     @State private var isLoading = true
@@ -26,6 +31,15 @@ struct ContentView: View {
     @State private var isRefreshing = false
     @State private var isUndoing = false
     @State private var showingMenu = false
+    
+    // Subscription status
+    @EnvironmentObject var purchaseManager: PurchaseManager
+    @State private var showingSubscriptionStatus = false
+    @State private var showingAdModal = false
+    @State private var showingPersistentUpgrade = false
+    @State private var showingRewardedAd = false
+    
+    // Tutorial overlay states - moved to TutorialOverlay component
     
     // Batch tracking
     @State private var swipedPhotos: [SwipedPhoto] = []
@@ -59,6 +73,9 @@ struct ContentView: View {
                     continueScreen
                 } else if showingReviewScreen {
                     reviewScreen
+                } else if !purchaseManager.canSwipe && (purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired) {
+                    // Show subscription upgrade screen if daily limit reached
+                    swipeLimitReachedView
                 } else {
                     photoView
                 }
@@ -68,6 +85,39 @@ struct ContentView: View {
                     VStack {
                         Spacer()
                         progressBar
+                    }
+                }
+                
+                // Tutorial overlay
+                if showTutorial && !isLoading && !photos.isEmpty && !isCompleted && !showingReviewScreen && !showingContinueScreen {
+                    TutorialOverlay(showTutorial: $showTutorial)
+                }
+                
+                // Subscription status overlay
+                if showingSubscriptionStatus {
+                    SubscriptionStatusView {
+                        showingSubscriptionStatus = false
+                    }
+                }
+                
+                // Ad modal
+                if showingAdModal {
+                    AdModalView {
+                        dismissAdModal()
+                    }
+                }
+                
+                // Rewarded ad modal
+                if showingRewardedAd {
+                    RewardedAdModalView {
+                        dismissRewardedAd()
+                    }
+                }
+                
+                // Persistent upgrade screen
+                if showingPersistentUpgrade {
+                    PersistentUpgradeView {
+                        showingPersistentUpgrade = false
                     }
                 }
             }
@@ -80,6 +130,7 @@ struct ContentView: View {
                                 .font(.system(size: 20, weight: .medium))
                                 .foregroundColor(.primary)
                         }
+                        // Note: Tutorial highlight moved to TutorialOverlay component
                         
                         Text("CleanSwipe")
                             .font(.system(size: 24, weight: .bold, design: .rounded))
@@ -95,6 +146,18 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                         }
                         
+                        // Show swipe limit for non-subscribers only
+                        if purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired {
+                            VStack(spacing: 2) {
+                                Text("Swipes")
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundColor(.secondary)
+                                Text("\(purchaseManager.dailySwipeCount)/10")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(purchaseManager.canSwipe ? .primary : .red)
+                            }
+                        }
+                        
                         if !showingReviewScreen && !swipedPhotos.isEmpty {
                             Button(action: undoLastPhoto) {
                                 Image(systemName: "arrow.uturn.left")
@@ -105,14 +168,42 @@ struct ContentView: View {
                     }
                 }
             }
+            // Note: Tutorial tap handling moved to TutorialOverlay component
         }
         .onAppear {
             setupPhotoLibraryObserver()
             requestPhotoAccess()
+            
+            // Check subscription status on app launch
+            Task {
+                await purchaseManager.checkSubscriptionStatus()
+            }
+            
+            // Show persistent upgrade screen for non-subscribers
+            checkAndShowPersistentUpgrade()
+            
+            // Note: Tutorial handling moved to TutorialOverlay component
+        }
+        // Note: Tutorial onChange handler moved to TutorialOverlay component
+        .onChange(of: purchaseManager.subscriptionStatus) { status in
+            handleSubscriptionStatusChange(status)
+            
+            // Dismiss persistent upgrade screen if user becomes a subscriber
+            if status == .trial || status == .active {
+                showingPersistentUpgrade = false
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             // Refresh when app becomes active
             refreshPhotos()
+            
+            // Check subscription status when app becomes active
+            Task {
+                await purchaseManager.checkSubscriptionStatus()
+            }
+            
+            // Show persistent upgrade screen for non-subscribers
+            checkAndShowPersistentUpgrade()
         }
         .alert("Photos Access Required", isPresented: $showingPermissionAlert) {
             Button("Settings") {
@@ -197,51 +288,100 @@ struct ContentView: View {
                 photoMetadataView
             }
             
-            // Photo display
-            if let image = currentImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .shadow(radius: 10)
-                    .offset(dragOffset)
-                    .rotationEffect(.degrees(dragOffset.width / 20.0))
-                    .opacity(1.0 - abs(dragOffset.width / 300.0))
-                    .scaleEffect(isUndoing ? 1.1 : 1.0)
-                    .animation(.easeInOut(duration: 0.3), value: isUndoing)
-                    .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                if !isUndoing {
-                                    dragOffset = value.translation
+            // Photo/Video display
+            if isCurrentAssetVideo {
+                if let player = currentVideoPlayer {
+                    VideoPlayer(player: player)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(radius: 10)
+                        .offset(dragOffset)
+                        .rotationEffect(.degrees(dragOffset.width / 20.0))
+                        .opacity(1.0 - abs(dragOffset.width / 300.0))
+                        .scaleEffect(isUndoing ? 1.1 : 1.0)
+                        .animation(.easeInOut(duration: 0.3), value: isUndoing)
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    if !isUndoing {
+                                        dragOffset = value.translation
+                                    }
                                 }
-                            }
-                            .onEnded { value in
-                                if !isUndoing {
-                                    if value.translation.width > 100.0 {
-                                        // Swipe right - keep photo
-                                        handleSwipe(action: .keep)
-                                    } else if value.translation.width < -100.0 {
-                                        // Swipe left - delete photo
-                                        handleSwipe(action: .delete)
-                                    } else {
-                                        // Reset position
-                                        withAnimation(.spring()) {
-                                            dragOffset = .zero
+                                .onEnded { value in
+                                    if !isUndoing {
+                                        if value.translation.width > 100.0 {
+                                            // Swipe right - keep video
+                                            handleSwipe(action: .keep)
+                                        } else if value.translation.width < -100.0 {
+                                            // Swipe left - delete video
+                                            handleSwipe(action: .delete)
+                                        } else {
+                                            // Reset position
+                                            withAnimation(.spring()) {
+                                                dragOffset = .zero
+                                            }
                                         }
                                     }
                                 }
-                            }
-                    )
+                        )
+                        .onAppear {
+                            player.play()
+                        }
+                } else {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(
+                            ProgressView()
+                                .scaleEffect(1.5)
+                        )
+                }
             } else {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(
-                        ProgressView()
-                            .scaleEffect(1.5)
-                    )
+                if let image = currentImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(radius: 10)
+                        .offset(dragOffset)
+                        .rotationEffect(.degrees(dragOffset.width / 20.0))
+                        .opacity(1.0 - abs(dragOffset.width / 300.0))
+                        .scaleEffect(isUndoing ? 1.1 : 1.0)
+                        .animation(.easeInOut(duration: 0.3), value: isUndoing)
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    if !isUndoing {
+                                        dragOffset = value.translation
+                                    }
+                                }
+                                .onEnded { value in
+                                    if !isUndoing {
+                                        if value.translation.width > 100.0 {
+                                            // Swipe right - keep photo
+                                            handleSwipe(action: .keep)
+                                        } else if value.translation.width < -100.0 {
+                                            // Swipe left - delete photo
+                                            handleSwipe(action: .delete)
+                                        } else {
+                                            // Reset position
+                                            withAnimation(.spring()) {
+                                                dragOffset = .zero
+                                            }
+                                        }
+                                    }
+                                }
+                        )
+                } else {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(
+                            ProgressView()
+                                .scaleEffect(1.5)
+                        )
+                }
             }
             
             // Action buttons and instructions
@@ -473,8 +613,56 @@ struct ContentView: View {
                         }
                     }
                 }
-                .listStyle(InsetGroupedListStyle())
+                
+                // Debug controls section (remove in production)
+                Section("Debug Controls") {
+                    Button("📊 Print Status") {
+                        purchaseManager.debugPrintStatus()
+                    }
+                    
+                    Button("🔄 Reset Subscription") {
+                        purchaseManager.debugResetSubscription()
+                    }
+                    
+                    Button("🚀 Start Trial") {
+                        purchaseManager.debugStartTrial()
+                    }
+                    
+                    Button("⏰ Expire Trial") {
+                        purchaseManager.debugExpireTrial()
+                    }
+                    
+                    Button("✅ Activate Subscription") {
+                        purchaseManager.debugActivateSubscription()
+                    }
+                    
+                    Button("🔄 Reset Onboarding") {
+                        purchaseManager.debugResetOnboarding()
+                    }
+                    
+                    Button("🔄 Reset Welcome Flow") {
+                        purchaseManager.debugResetWelcomeFlow()
+                    }
+                    
+                    Button("📊 Reset Daily Swipes") {
+                        purchaseManager.debugResetDailySwipes()
+                    }
+                    
+                    Button("🎯 Add 5 Swipes") {
+                        purchaseManager.debugAddSwipes(5)
+                    }
+                    
+                    Button("🎯 Set to 9 Swipes") {
+                        purchaseManager.debugSetSwipes(9)
+                    }
+                    
+                    Button("🎯 Test Daily Limit") {
+                        purchaseManager.debugTestRewardedAd()
+                    }
+                }
+                .foregroundColor(.blue)
             }
+            .listStyle(InsetGroupedListStyle())
             .navigationTitle("Menu")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -521,6 +709,97 @@ struct ContentView: View {
             .background(Color.blue)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .disabled(isRefreshing)
+        }
+        .padding()
+    }
+    
+    private var swipeLimitReachedView: some View {
+        VStack(spacing: 30) {
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 80))
+                .foregroundColor(.orange)
+            
+            Text("Daily Limit Reached!")
+                .font(.system(size: 32, weight: .bold))
+                .foregroundColor(.primary)
+            
+            Text("You've used all 10 free swipes for today. Choose an option below to continue cleaning!")
+                .font(.system(size: 18))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            
+            VStack(spacing: 8) {
+                Text("Used today: \(purchaseManager.dailySwipeCount)/10")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            
+            VStack(spacing: 16) {
+                // Subscribe option
+                Button(action: {
+                    showingSubscriptionStatus = true
+                }) {
+                    VStack(spacing: 8) {
+                        HStack {
+                            Image(systemName: "crown.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.yellow)
+                            
+                            Text("Upgrade to Premium")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                            
+                            Spacer()
+                        }
+                        
+                        Text("Unlimited swipes • No ads • Premium features")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.8))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+                    .background(Color.blue)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                
+                // Watch ad option
+                Button(action: {
+                    showRewardedAd()
+                }) {
+                    VStack(spacing: 8) {
+                        HStack {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.green)
+                            
+                            Text("Watch Ad for 50 More Swipes")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                            
+                            Spacer()
+                        }
+                        
+                        Text("Watch a short video to unlock 50 additional swipes today")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.8))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+                    .background(Color.green)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                
+                // Come back tomorrow option
+                Button(action: {
+                    // User can close the app or navigate away
+                }) {
+                    Text("Come Back Tomorrow")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+            }
         }
         .padding()
     }
@@ -591,18 +870,33 @@ struct ContentView: View {
     }
     
     private func requestPhotoAccess() {
-        PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
-            DispatchQueue.main.async {
-                switch status {
-                case .authorized, .limited:
-                    loadPhotos()
-                case .denied, .restricted:
-                    showingPermissionAlert = true
-                    isLoading = false
-                default:
-                    break
+        let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        
+        // If already denied or restricted, show permission alert immediately
+        if currentStatus == .denied || currentStatus == .restricted {
+            showingPermissionAlert = true
+            isLoading = false
+            return
+        }
+        
+        // If not determined, request permission
+        if currentStatus == .notDetermined {
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                DispatchQueue.main.async {
+                    switch status {
+                    case .authorized, .limited:
+                        loadPhotos()
+                    case .denied, .restricted:
+                        showingPermissionAlert = true
+                        isLoading = false
+                    default:
+                        break
+                    }
                 }
             }
+        } else {
+            // Already authorized or limited, proceed to load photos
+            loadPhotos()
         }
     }
     
@@ -610,11 +904,30 @@ struct ContentView: View {
         let fetchOptions = PHFetchOptions()
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         
-        let fetchResult = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        // Filter by content type
+        let mediaType: PHAssetMediaType = contentType == .photos ? .image : .unknown
+        let fetchResult: PHFetchResult<PHAsset>
+        
+        if contentType == .photos {
+            fetchResult = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        } else {
+            // For photos & videos, fetch both
+            fetchResult = PHAsset.fetchAssets(with: fetchOptions)
+        }
         
         var loadedPhotos: [PHAsset] = []
         fetchResult.enumerateObjects { asset, _, _ in
-            loadedPhotos.append(asset)
+            if contentType == .photos {
+                // Only include images
+                if asset.mediaType == .image {
+                    loadedPhotos.append(asset)
+                }
+            } else {
+                // Include both images and videos
+                if asset.mediaType == .image || asset.mediaType == .video {
+                    loadedPhotos.append(asset)
+                }
+            }
         }
         
         // Store all photos for filtering
@@ -653,6 +966,9 @@ struct ContentView: View {
         
         // Clear metadata for new batch
         currentImage = nil
+        currentVideoPlayer?.pause()
+        currentVideoPlayer = nil
+        isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
         
@@ -670,25 +986,60 @@ struct ContentView: View {
         }
         
         let asset = currentBatch[currentPhotoIndex]
+        isCurrentAssetVideo = asset.mediaType == .video
         
-        // Load image
-        let options = PHImageRequestOptions()
-        options.isSynchronous = false
-        options.deliveryMode = .highQualityFormat
-        
-        imageManager.requestImage(
-            for: asset,
-            targetSize: CGSize(width: 1000.0, height: 1000.0),
-            contentMode: .aspectFill,
-            options: options
-        ) { image, _ in
-            DispatchQueue.main.async {
-                self.currentImage = image
+        if isCurrentAssetVideo {
+            // Load video
+            loadVideo(for: asset)
+        } else {
+            // Load image
+            let options = PHImageRequestOptions()
+            options.isSynchronous = false
+            options.deliveryMode = .highQualityFormat
+            
+            imageManager.requestImage(
+                for: asset,
+                targetSize: CGSize(width: 1000.0, height: 1000.0),
+                contentMode: .aspectFill,
+                options: options
+            ) { image, _ in
+                DispatchQueue.main.async {
+                    self.currentImage = image
+                }
             }
         }
         
         // Load metadata
         loadPhotoMetadata(for: asset)
+    }
+    
+    private func loadVideo(for asset: PHAsset) {
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+            DispatchQueue.main.async {
+                if let avAsset = avAsset {
+                    let player = AVPlayer(playerItem: AVPlayerItem(asset: avAsset))
+                    player.isMuted = true // No volume
+                    player.actionAtItemEnd = .none
+                    
+                    // Set up looping
+                    NotificationCenter.default.addObserver(
+                        forName: .AVPlayerItemDidPlayToEndTime,
+                        object: player.currentItem,
+                        queue: .main
+                    ) { _ in
+                        player.seek(to: .zero)
+                        player.play()
+                    }
+                    
+                    self.currentVideoPlayer = player
+                    player.play() // Auto-play
+                }
+            }
+        }
     }
     
     private func loadPhotoMetadata(for asset: PHAsset) {
@@ -730,7 +1081,23 @@ struct ContentView: View {
     }
     
     private func handleSwipe(action: SwipeAction) {
+        // Check if user can swipe (daily limit for non-subscribers)
+        guard purchaseManager.canSwipe else {
+            // This should not happen anymore since the UI now shows swipeLimitReachedView
+            // But keeping as fallback
+            showingSubscriptionStatus = true
+            return
+        }
+        
         let asset = currentBatch[currentPhotoIndex]
+        
+        // Pause video if it's playing
+        if isCurrentAssetVideo {
+            currentVideoPlayer?.pause()
+        }
+        
+        // Record the swipe
+        purchaseManager.recordSwipe()
         
         // Animate swipe
         withAnimation(.easeInOut(duration: 0.3)) {
@@ -741,13 +1108,21 @@ struct ContentView: View {
         swipedPhotos.append(SwipedPhoto(asset: asset, action: action))
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            nextPhoto()
+            // Check if we should show an ad
+            if purchaseManager.shouldShowAd() {
+                showAdModal()
+            } else {
+                nextPhoto()
+            }
         }
     }
     
     private func nextPhoto() {
         dragOffset = .zero
         currentImage = nil
+        currentVideoPlayer?.pause()
+        currentVideoPlayer = nil
+        isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
         currentPhotoIndex += 1
@@ -783,6 +1158,9 @@ struct ContentView: View {
         
         // Clear current metadata
         currentImage = nil
+        currentVideoPlayer?.pause()
+        currentVideoPlayer = nil
+        isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
         
@@ -886,6 +1264,9 @@ struct ContentView: View {
         currentPhotoIndex = 0
         totalProcessed = 0
         currentImage = nil
+        currentVideoPlayer?.pause()
+        currentVideoPlayer = nil
+        isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
         dragOffset = .zero
@@ -955,6 +1336,9 @@ struct ContentView: View {
         currentPhotoIndex = 0
         totalProcessed = 0
         currentImage = nil
+        currentVideoPlayer?.pause()
+        currentVideoPlayer = nil
+        isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
         dragOffset = .zero
@@ -971,138 +1355,323 @@ struct ContentView: View {
             setupNewBatch()
         }
     }
-}
-
-// MARK: - Supporting Types and Views
-
-enum PhotoFilter: Equatable {
-    case random
-    case year(Int)
-}
-
-extension Date {
-    var year: Int {
-        Calendar.current.component(.year, from: self)
-    }
-}
-
-struct MenuRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let isSelected: Bool
-    let action: () -> Void
     
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(isSelected ? .white : .blue)
-                    .frame(width: 24, height: 24)
-                    .background(isSelected ? Color.blue : Color.clear)
-                    .clipShape(Circle())
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.primary)
-                    
-                    Text(subtitle)
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.blue)
-                }
-            }
-            .contentShape(Rectangle())
+    private func handleSubscriptionStatusChange(_ status: SubscriptionStatus) {
+        switch status {
+        case .expired, .cancelled:
+            // Show subscription status view for expired or cancelled subscriptions
+            showingSubscriptionStatus = true
+            
+        case .notSubscribed:
+            // Allow limited access for non-subscribed users
+            showingSubscriptionStatus = false
+            
+        case .trial, .active:
+            // Full access for trial and active subscribers
+            showingSubscriptionStatus = false
+            showingPersistentUpgrade = false // Ensure upgrade screen is dismissed
         }
-        .buttonStyle(PlainButtonStyle())
     }
+    
+    private func showAdModal() {
+        showingAdModal = true
+    }
+    
+    private func dismissAdModal() {
+        showingAdModal = false
+        purchaseManager.resetAdCounter()
+        nextPhoto()
+    }
+    
+    private func showRewardedAd() {
+        showingRewardedAd = true
+    }
+    
+    private func dismissRewardedAd() {
+        showingRewardedAd = false
+        // Grant 50 additional swipes
+        purchaseManager.grantRewardedSwipes(50)
+    }
+    
+    private func checkAndShowPersistentUpgrade() {
+        // Show persistent upgrade screen for non-subscribers and expired users
+        // But only if they haven't reached their daily limit (which shows a different screen)
+        // And only if they're not already a subscriber
+        if (purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired) && 
+           purchaseManager.canSwipe && 
+           !showingPersistentUpgrade {
+            showingPersistentUpgrade = true
+        }
+    }
+    
+    // Note: Tutorial overlay moved to Components/TutorialOverlay.swift
 }
 
 // MARK: - Supporting Types and Views
 
-enum SwipeAction {
-    case keep
-    case delete
-}
+// Note: PhotoFilter moved to Models/PhotoModels.swift
+// Note: Date extension moved to Extensions/Date+Extensions.swift
 
-struct SwipedPhoto {
-    let asset: PHAsset
-    var action: SwipeAction
-}
+// Note: MenuRow moved to Components/MenuRow.swift
 
-struct PhotoThumbnailView: View {
-    let asset: PHAsset
-    let onUndo: () -> Void
-    
-    @State private var image: UIImage?
-    private let imageManager = PHImageManager.default()
+// MARK: - Supporting Types and Views
+// Note: SwipeAction and SwipedPhoto moved to Models/PhotoModels.swift
+
+// Note: PhotoThumbnailView moved to Components/PhotoThumbnailView.swift
+
+// MARK: - Ad Modal View
+struct AdModalView: View {
+    let onDismiss: () -> Void
     
     var body: some View {
         ZStack {
-            if let image = image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 100, height: 100)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(width: 100, height: 100)
-                    .overlay(
-                        ProgressView()
-                            .scaleEffect(0.8)
-                    )
-            }
+            Color.black.opacity(0.8)
+                .ignoresSafeArea()
             
-            // Undo button
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: onUndo) {
-                        Image(systemName: "arrow.uturn.left.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(.white)
-                            .background(Color.blue)
-                            .clipShape(Circle())
-                    }
-                    .padding(4)
+            VStack(spacing: 20) {
+                Text("Advertisement")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.white)
+                
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(height: 200)
+                    .overlay(
+                        VStack(spacing: 10) {
+                            Image(systemName: "play.circle.fill")
+                                .font(.system(size: 48))
+                                .foregroundColor(.white.opacity(0.6))
+                            
+                            Text("Placeholder Ad")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                            
+                            Text("This is where an ad would appear")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                
+                Button(action: onDismiss) {
+                    Text("Continue")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                Spacer()
             }
+            .padding(40)
+        }
+    }
+}
+
+// MARK: - Rewarded Ad Modal View
+struct RewardedAdModalView: View {
+    let onDismiss: () -> Void
+    @State private var adProgress: Double = 0.0
+    @State private var isAdComplete = false
+    
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.9)
+                .ignoresSafeArea()
+            
+            VStack(spacing: 30) {
+                Text("Watch Ad for 50 Swipes")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundColor(.white)
+                
+                VStack(spacing: 20) {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(height: 250)
+                        .overlay(
+                            VStack(spacing: 15) {
+                                if !isAdComplete {
+                                    Image(systemName: "play.circle.fill")
+                                        .font(.system(size: 64))
+                                        .foregroundColor(.green)
+                                    
+                                    Text("Rewarded Video Ad")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.8))
+                                    
+                                    Text("Watch this video to earn 50 additional swipes")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(.white.opacity(0.6))
+                                        .multilineTextAlignment(.center)
+                                    
+                                    ProgressView(value: adProgress)
+                                        .progressViewStyle(LinearProgressViewStyle(tint: .green))
+                                        .frame(width: 200)
+                                    
+                                    Text("\(Int(adProgress * 100))% Complete")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.white.opacity(0.7))
+                                } else {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 64))
+                                        .foregroundColor(.green)
+                                    
+                                    Text("Ad Complete!")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.8))
+                                    
+                                    Text("You've earned 50 additional swipes!")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(.white.opacity(0.6))
+                                }
+                            }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                
+                if !isAdComplete {
+                    Text("Please watch the entire ad to receive your reward")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                } else {
+                    Button(action: onDismiss) {
+                        Text("Claim 50 Swipes")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.green)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+            }
+            .padding(40)
         }
         .onAppear {
-            loadThumbnail()
+            startAdSimulation()
         }
     }
     
-    private func loadThumbnail() {
-        let options = PHImageRequestOptions()
-        options.isSynchronous = false
-        options.deliveryMode = .opportunistic
-        
-        imageManager.requestImage(
-            for: asset,
-            targetSize: CGSize(width: 200.0, height: 200.0),
-            contentMode: .aspectFill,
-            options: options
-        ) { image, _ in
-            DispatchQueue.main.async {
-                self.image = image
+    private func startAdSimulation() {
+        // Simulate ad progress
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
+            if adProgress < 1.0 {
+                adProgress += 0.02 // Complete in ~5 seconds
+            } else {
+                timer.invalidate()
+                isAdComplete = true
             }
+        }
+    }
+}
+
+// MARK: - Persistent Upgrade View
+struct PersistentUpgradeView: View {
+    let onDismiss: () -> Void
+    @StateObject private var purchaseManager = PurchaseManager.shared
+    
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.9)
+                .ignoresSafeArea()
+            
+            VStack(spacing: 30) {
+                HStack {
+                    Spacer()
+                    
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                }
+                .padding(.top, 20)
+                
+                VStack(spacing: 20) {
+                    Text("Try CleanSwipe Premium")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                    
+                    Text("You've used your free swipes for today!")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                }
+                
+                VStack(spacing: 16) {
+                    UpgradeFeatureRow(icon: "infinity", title: "Unlimited swipes", description: "No daily limits")
+                    UpgradeFeatureRow(icon: "rectangle.slash", title: "No ads", description: "Clean, uninterrupted experience")
+                    UpgradeFeatureRow(icon: "sparkles", title: "Premium features", description: "Advanced filtering & sorting")
+                }
+                .padding(.horizontal, 20)
+                
+                VStack(spacing: 12) {
+                    Button(action: {
+                        Task {
+                            await purchaseManager.startTrialPurchase()
+                            onDismiss()
+                        }
+                    }) {
+                        HStack {
+                            if purchaseManager.purchaseState == .purchasing {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(0.8)
+                            }
+                            
+                            Text(purchaseManager.purchaseState == .purchasing ? "Starting Trial..." : "Start 3-Day Free Trial")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .disabled(purchaseManager.purchaseState == .purchasing)
+                    
+                    Text("Then £1/week • Cancel anytime")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                
+                Spacer()
+            }
+            .padding(.horizontal, 30)
+        }
+    }
+}
+
+// MARK: - Upgrade Feature Row
+private struct UpgradeFeatureRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: icon)
+                .font(.system(size: 20))
+                .foregroundColor(.blue)
+                .frame(width: 24, height: 24)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+                
+                Text(description)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            
+            Spacer()
         }
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView(contentType: .photos, showTutorial: .constant(true))
 }
