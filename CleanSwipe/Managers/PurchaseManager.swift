@@ -15,6 +15,7 @@ class PurchaseManager: ObservableObject {
     
     // MARK: - Swipe Tracking
     @Published var dailySwipeCount: Int = 0
+    @Published var rewardedSwipesRemaining: Int = 0
     @Published var canSwipe: Bool = true
     @Published var swipesUntilAd: Int = 5
     
@@ -234,13 +235,20 @@ class PurchaseManager: ObservableObject {
     
     func checkDailySwipeLimit() {
         loadDailySwipeCount()
+        loadRewardedSwipes()
         updateCanSwipeStatus()
     }
     
     func recordSwipe() {
-        // Increment daily swipe count
-        dailySwipeCount += 1
-        saveDailySwipeCount()
+        // Use rewarded swipes first, then daily swipes
+        if rewardedSwipesRemaining > 0 {
+            rewardedSwipesRemaining -= 1
+            saveRewardedSwipes()
+        } else {
+            // Increment daily swipe count
+            dailySwipeCount += 1
+            saveDailySwipeCount()
+        }
         
         // Update ad counter
         swipesUntilAd -= 1
@@ -251,16 +259,16 @@ class PurchaseManager: ObservableObject {
         // Update swipe availability
         updateCanSwipeStatus()
         
-        print("📱 Swipe recorded: \(dailySwipeCount)/\(maxDailySwipes), Next ad in: \(swipesUntilAd)")
+        print("📱 Swipe recorded: \(dailySwipeCount)/\(maxDailySwipes), Rewarded: \(rewardedSwipesRemaining), Next ad in: \(swipesUntilAd)")
     }
     
     func grantRewardedSwipes(_ count: Int) {
         // Grant additional swipes beyond the daily limit
-        dailySwipeCount -= count // Subtract from current count to effectively add swipes
-        saveDailySwipeCount()
+        rewardedSwipesRemaining += count
+        saveRewardedSwipes()
         updateCanSwipeStatus()
         
-        print("🎁 Rewarded \(count) swipes, new total: \(dailySwipeCount)")
+        print("🎁 Rewarded \(count) swipes, rewarded swipes remaining: \(rewardedSwipesRemaining)")
     }
     
     func shouldShowAd() -> Bool {
@@ -281,7 +289,7 @@ class PurchaseManager: ObservableObject {
         case .trial, .active:
             canSwipe = true
         case .notSubscribed, .expired, .cancelled:
-            canSwipe = dailySwipeCount < maxDailySwipes
+            canSwipe = rewardedSwipesRemaining > 0 || dailySwipeCount < maxDailySwipes
         }
     }
     
@@ -301,6 +309,26 @@ class PurchaseManager: ObservableObject {
     
     private func saveDailySwipeCount() {
         UserDefaults.standard.set(dailySwipeCount, forKey: "dailySwipeCount")
+    }
+    
+    private func loadRewardedSwipes() {
+        let today = dateString(from: Date())
+        let storedDate = UserDefaults.standard.string(forKey: "lastRewardedSwipeDate") ?? ""
+        
+        if today == storedDate {
+            rewardedSwipesRemaining = UserDefaults.standard.integer(forKey: "rewardedSwipesRemaining")
+        } else {
+            // New day, reset rewarded swipes
+            rewardedSwipesRemaining = 0
+            UserDefaults.standard.set(today, forKey: "lastRewardedSwipeDate")
+            UserDefaults.standard.set(0, forKey: "rewardedSwipesRemaining")
+        }
+    }
+    
+    private func saveRewardedSwipes() {
+        let today = dateString(from: Date())
+        UserDefaults.standard.set(today, forKey: "lastRewardedSwipeDate")
+        UserDefaults.standard.set(rewardedSwipesRemaining, forKey: "rewardedSwipesRemaining")
     }
     
     private func dateString(from date: Date) -> String {
@@ -371,6 +399,7 @@ class PurchaseManager: ObservableObject {
         // Print swipe tracking status
         print("📊 Swipe Tracking:")
         print("  Daily swipes: \(dailySwipeCount)/\(maxDailySwipes)")
+        print("  Rewarded swipes remaining: \(rewardedSwipesRemaining)")
         print("  Can swipe: \(canSwipe)")
         print("  Swipes until ad: \(swipesUntilAd)")
         
@@ -404,9 +433,11 @@ class PurchaseManager: ObservableObject {
     /// Debug: Reset daily swipes
     func debugResetDailySwipes() {
         dailySwipeCount = 0
+        rewardedSwipesRemaining = 0
         UserDefaults.standard.set(0, forKey: "dailySwipeCount")
+        UserDefaults.standard.set(0, forKey: "rewardedSwipesRemaining")
         updateCanSwipeStatus()
-        print("📊 Debug: Daily swipes reset to 0")
+        print("📊 Debug: Daily swipes and rewarded swipes reset to 0")
     }
     
     /// Debug: Add swipes for testing
