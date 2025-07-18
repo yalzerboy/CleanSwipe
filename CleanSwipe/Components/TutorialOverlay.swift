@@ -87,7 +87,7 @@ struct TutorialOverlay: View {
                 startTutorial()
             }
         }
-        .onChange(of: showTutorial) { newValue in
+        .onChange(of: showTutorial) { oldValue, newValue in
             if newValue && !showingTutorialOverlay {
                 startTutorial()
             }

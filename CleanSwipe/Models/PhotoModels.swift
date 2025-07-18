@@ -1,9 +1,18 @@
 import Foundation
 import Photos
 
-enum PhotoFilter: Equatable {
+enum PhotoFilter: Equatable, Codable, Hashable {
     case random
     case year(Int)
+    
+    var displayName: String {
+        switch self {
+        case .random:
+            return "Random"
+        case .year(let year):
+            return String(year)
+        }
+    }
 }
 
 enum SwipeAction {

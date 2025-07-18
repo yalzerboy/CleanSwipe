@@ -66,7 +66,7 @@ struct CleanSwipeApp: App {
                         showTutorial: $showingTutorial
                     )
                     .environmentObject(purchaseManager)
-                    .onChange(of: showingTutorial) { newValue in
+                    .onChange(of: showingTutorial) { oldValue, newValue in
                         // Persist tutorial preference
                         UserDefaults.standard.set(newValue, forKey: "showingTutorial")
                     }

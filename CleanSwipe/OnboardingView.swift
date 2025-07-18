@@ -30,9 +30,9 @@ struct OnboardingFlowView: View {
     let onComplete: (ContentType) -> Void
     @State private var currentStep: OnboardingStep = .welcome
     @State private var userAge: String = ""
-    @State private var photoCount: PhotoCount = .less500
-    @State private var cleaningFrequency: CleaningFrequency = .never
-    @State private var contentType: ContentType = .photos
+    @State private var photoCount: PhotoCount? = nil
+    @State private var cleaningFrequency: CleaningFrequency? = nil
+    @State private var contentType: ContentType? = nil
     @State private var loadingProgress: Double = 0.0
     
     var body: some View {
@@ -60,15 +60,21 @@ struct OnboardingFlowView: View {
                 }
             case .photoCount:
                 PhotoCountView(selectedCount: $photoCount) {
-                    currentStep = .cleaningFrequency
+                    if let _ = photoCount {
+                        currentStep = .cleaningFrequency
+                    }
                 }
             case .cleaningFrequency:
                 CleaningFrequencyView(selectedFrequency: $cleaningFrequency) {
-                    currentStep = .contentType
+                    if let _ = cleaningFrequency {
+                        currentStep = .contentType
+                    }
                 }
             case .contentType:
                 ContentTypeView(selectedType: $contentType) {
-                    currentStep = .preparing
+                    if contentType != nil {
+                        currentStep = .preparing
+                    }
                 }
             case .preparing:
                 PreparingView(progress: $loadingProgress) {
@@ -83,7 +89,11 @@ struct OnboardingFlowView: View {
                     currentStep = .finalContinue
                 }
             case .finalContinue:
-                FinalContinueView(onSkip: { onComplete(contentType) }, onContinue: { onComplete(contentType) })
+                FinalContinueView(onSkip: { 
+                    onComplete(contentType ?? .photos) 
+                }, onContinue: { 
+                    onComplete(contentType ?? .photos)
+                })
             }
         }
     }
@@ -352,180 +362,232 @@ struct AgeView: View {
 
 // MARK: - Photo Count View
 struct PhotoCountView: View {
-    @Binding var selectedCount: PhotoCount
+    @Binding var selectedCount: PhotoCount?
     let onContinue: () -> Void
     
     var body: some View {
         VStack(spacing: 40) {
-            Text("How many photos do you have?")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-            
-            VStack(spacing: 16) {
-                ForEach(PhotoCount.allCases, id: \.self) { count in
-                    Button(action: {
-                        selectedCount = count
-                    }) {
-                        HStack {
-                            Image(systemName: selectedCount == count ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 20))
-                                .foregroundColor(selectedCount == count ? .blue : .gray)
-                            
-                            Text(count.rawValue)
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(.white)
-                            
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedCount == count ? Color.blue.opacity(0.2) : Color.gray.opacity(0.1))
-                        )
-                    }
-                }
-            }
-            .padding(.horizontal, 40)
-            
+            headerSection
+            optionsSection
             Spacer()
-            
-            HStack(spacing: 20) {
-                Button("Skip") {
-                    onContinue()
-                }
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white.opacity(0.7))
-                
-                Button(action: onContinue) {
-                    Text("Continue")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(Color.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-            }
-            .padding(.horizontal, 40)
-            .padding(.bottom, 50)
+            continueButton
         }
         .padding(.top, 80)
+    }
+    
+    private var headerSection: some View {
+        VStack(spacing: 20) {
+            Text("How many photos do you have?")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .multilineTextAlignment(.center)
+        }
+    }
+    
+    private var optionsSection: some View {
+        VStack(spacing: 16) {
+            ForEach(Array(PhotoCount.allCases.enumerated()), id: \.element) { _, count in
+                optionButton(for: count)
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    private func optionButton(for count: PhotoCount) -> some View {
+        Button(action: {
+            selectedCount = count
+        }) {
+            HStack {
+                Text(count.rawValue)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                if selectedCount == count {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                }
+            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(backgroundColor(for: count))
+            )
+        }
+    }
+    
+    private var continueButton: some View {
+        Button(action: onContinue) {
+            Text("Continue")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(selectedCount != nil ? Color.blue : Color.gray)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .disabled(selectedCount == nil)
+        .padding(.horizontal, 40)
+        .padding(.bottom, 50)
+    }
+    
+    private func backgroundColor(for count: PhotoCount) -> Color {
+        return selectedCount == count ? Color.white.opacity(0.3) : Color.white.opacity(0.1)
     }
 }
 
 // MARK: - Cleaning Frequency View
 struct CleaningFrequencyView: View {
-    @Binding var selectedFrequency: CleaningFrequency
+    @Binding var selectedFrequency: CleaningFrequency?
     let onContinue: () -> Void
     
     var body: some View {
         VStack(spacing: 40) {
-            Text("How often do you clean your camera roll?")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-            
-            VStack(spacing: 16) {
-                ForEach(CleaningFrequency.allCases, id: \.self) { frequency in
-                    Button(action: {
-                        selectedFrequency = frequency
-                    }) {
-                        HStack {
-                            Image(systemName: selectedFrequency == frequency ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 20))
-                                .foregroundColor(selectedFrequency == frequency ? .blue : .gray)
-                            
-                            Text(frequency.rawValue)
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(.white)
-                            
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedFrequency == frequency ? Color.blue.opacity(0.2) : Color.gray.opacity(0.1))
-                        )
-                    }
-                }
-            }
-            .padding(.horizontal, 40)
-            
+            headerSection
+            optionsSection
             Spacer()
-            
-            HStack(spacing: 20) {
-                Button("Skip") {
-                    onContinue()
-                }
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white.opacity(0.7))
-                
-                Button(action: onContinue) {
-                    Text("Continue")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(Color.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-            }
-            .padding(.horizontal, 40)
-            .padding(.bottom, 50)
+            continueButton
         }
         .padding(.top, 80)
+    }
+    
+    private var headerSection: some View {
+        VStack(spacing: 20) {
+            Text("How often do you clean your photos?")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .multilineTextAlignment(.center)
+        }
+    }
+    
+    private var optionsSection: some View {
+        VStack(spacing: 16) {
+            ForEach(Array(CleaningFrequency.allCases.enumerated()), id: \.element) { _, frequency in
+                optionButton(for: frequency)
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    private func optionButton(for frequency: CleaningFrequency) -> some View {
+        Button(action: {
+            selectedFrequency = frequency
+        }) {
+            HStack {
+                Text(frequency.rawValue)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                if selectedFrequency == frequency {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                }
+            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(backgroundColor(for: frequency))
+            )
+        }
+    }
+    
+    private var continueButton: some View {
+        Button(action: onContinue) {
+            Text("Continue")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(selectedFrequency != nil ? Color.blue : Color.gray)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .disabled(selectedFrequency == nil)
+        .padding(.horizontal, 40)
+        .padding(.bottom, 50)
+    }
+    
+    private func backgroundColor(for frequency: CleaningFrequency) -> Color {
+        return selectedFrequency == frequency ? Color.white.opacity(0.3) : Color.white.opacity(0.1)
     }
 }
 
 // MARK: - Content Type View
 struct ContentTypeView: View {
-    @Binding var selectedType: ContentType
+    @Binding var selectedType: ContentType?
     let onContinue: () -> Void
     
     var body: some View {
         VStack(spacing: 40) {
-            Text("Do you want to clean up photos or photos & videos?")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-            
-            VStack(spacing: 20) {
-                ForEach(ContentType.allCases, id: \.self) { type in
-                    Button(action: {
-                        selectedType = type
-                    }) {
-                        Text(type.rawValue)
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 60)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(selectedType == type ? Color.blue : Color.gray.opacity(0.3))
-                            )
-                    }
-                }
-            }
-            .padding(.horizontal, 40)
-            
+            headerSection
+            optionsSection
             Spacer()
-            
-            Button(action: onContinue) {
-                Text("Continue")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .padding(.horizontal, 40)
-            .padding(.bottom, 50)
+            continueButton
         }
         .padding(.top, 80)
+    }
+    
+    private var headerSection: some View {
+        VStack(spacing: 20) {
+            Text("What would you like to clean?")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .multilineTextAlignment(.center)
+        }
+    }
+    
+    private var optionsSection: some View {
+        VStack(spacing: 16) {
+            ForEach(Array(ContentType.allCases.enumerated()), id: \.element) { _, type in
+                optionButton(for: type)
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    private func optionButton(for type: ContentType) -> some View {
+        Button(action: {
+            selectedType = type
+        }) {
+            HStack {
+                Text(type.rawValue)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                if selectedType == type {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                }
+            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(backgroundColor(for: type))
+            )
+        }
+    }
+    
+    private var continueButton: some View {
+        Button(action: onContinue) {
+            Text("Continue")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(selectedType != nil ? Color.blue : Color.gray)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .disabled(selectedType == nil)
+        .padding(.horizontal, 40)
+        .padding(.bottom, 50)
+    }
+    
+    private func backgroundColor(for type: ContentType) -> Color {
+        return selectedType == type ? Color.white.opacity(0.3) : Color.white.opacity(0.1)
     }
 }
 
@@ -543,12 +605,12 @@ struct PreparingView: View {
                 .multilineTextAlignment(.center)
             
             VStack(spacing: 20) {
-                ProgressView(value: progress)
+                ProgressView(value: clampedProgress)
                     .progressViewStyle(LinearProgressViewStyle(tint: .blue))
                     .frame(height: 8)
                     .padding(.horizontal, 40)
                 
-                Text("\(Int(progress * 100))%")
+                Text("\(Int(clampedProgress * 100))%")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.white.opacity(0.7))
             }
@@ -564,10 +626,14 @@ struct PreparingView: View {
         }
     }
     
+    private var clampedProgress: Double {
+        return max(0.0, min(progress, 1.0))
+    }
+    
     private func startProgress() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
             if progress < 1.0 {
-                progress += 0.017 // Completes in ~3 seconds
+                progress = min(progress + 0.017, 1.0) // Clamp to 1.0
             } else {
                 timer?.invalidate()
                 onComplete()
@@ -776,8 +842,8 @@ struct FinalContinueView: View {
             .padding(.horizontal, 40)
             .padding(.bottom, 50)
         }
-        .onChange(of: purchaseManager.purchaseState) { state in
-            handlePurchaseStateChange(state)
+        .onChange(of: purchaseManager.subscriptionStatus) { oldValue, newValue in
+            handleSubscriptionStatusChange(newValue)
         }
         .alert("Purchase Status", isPresented: $showingAlert) {
             Button("OK") {}
@@ -816,39 +882,18 @@ struct FinalContinueView: View {
         await purchaseManager.restorePurchases()
     }
     
-    private func handlePurchaseStateChange(_ state: PurchaseState) {
-        switch state {
-        case .success:
-            // Check if trial was successfully started
-            if purchaseManager.subscriptionStatus == .trial {
-                alertMessage = "Welcome to your 3-day free trial! Enjoy unlimited access to CleanSwipe Premium."
-                showingAlert = true
-                
-                // Proceed to main app after a short delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    onContinue()
-                }
-            } else {
+    private func handleSubscriptionStatusChange(_ status: SubscriptionStatus) {
+        switch status {
+        case .trial:
+            alertMessage = "Welcome to your 3-day free trial! Enjoy unlimited access to CleanSwipe Premium."
+            showingAlert = true
+            
+            // Proceed to main app after a short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 onContinue()
             }
-            
-        case .failed(let error):
-            if let purchaseError = error as? PurchaseError {
-                switch purchaseError {
-                case .userCancelled:
-                    // Don't show alert for user cancellation
-                    break
-                default:
-                    alertMessage = purchaseError.localizedDescription
-                    showingAlert = true
-                }
-            } else {
-                alertMessage = "Purchase failed: \(error.localizedDescription)"
-                showingAlert = true
-            }
-            
         default:
-            break
+            onContinue()
         }
     }
 }

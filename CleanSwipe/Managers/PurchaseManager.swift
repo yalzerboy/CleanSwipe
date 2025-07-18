@@ -136,6 +136,9 @@ class PurchaseManager: ObservableObject {
             */
             
             // Simulate status check for now
+            if !isConfigured {
+                throw PurchaseError.unknown("Purchase manager not configured")
+            }
             simulateSubscriptionStatus()
             
         } catch {

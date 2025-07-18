@@ -403,6 +403,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"CleanSwipe/Preview Content\"";
+				DEVELOPMENT_TEAM = 63FZ6N973R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "CleanSwipe needs access to your photos to help you organize and clean up your photo library by swiping to keep or delete photos.";
@@ -432,6 +433,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"CleanSwipe/Preview Content\"";
+				DEVELOPMENT_TEAM = 63FZ6N973R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "CleanSwipe needs access to your photos to help you organize and clean up your photo library by swiping to keep or delete photos.";

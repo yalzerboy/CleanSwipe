@@ -110,8 +110,8 @@ struct SubscriptionStatusView: View {
                 .padding(.bottom, 50)
             }
         }
-        .onChange(of: purchaseManager.purchaseState) { state in
-            handlePurchaseStateChange(state)
+        .onChange(of: purchaseManager.purchaseState) { oldValue, newValue in
+            handlePurchaseStateChange(newValue)
         }
         .alert("Purchase Status", isPresented: $showingAlert) {
             Button("OK") {}
