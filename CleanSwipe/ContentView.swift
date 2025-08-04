@@ -14,13 +14,25 @@ import Network
 struct ContentView: View {
     let contentType: ContentType
     @Binding var showTutorial: Bool
+    let onPhotoAccessLost: (() -> Void)?
+    let onContentTypeChange: ((ContentType) -> Void)?
+    
+    init(contentType: ContentType, showTutorial: Binding<Bool>, onPhotoAccessLost: (() -> Void)? = nil, onContentTypeChange: ((ContentType) -> Void)? = nil) {
+        self.contentType = contentType
+        self._showTutorial = showTutorial
+        self.onPhotoAccessLost = onPhotoAccessLost
+        self.onContentTypeChange = onContentTypeChange
+        self._selectedContentType = State(initialValue: contentType)
+    }
+    
+    @EnvironmentObject var notificationManager: NotificationManager
     @State private var photos: [PHAsset] = []
     @State private var currentBatch: [PHAsset] = []
     @State private var currentPhotoIndex = 0
-    @State private var batchIndex = 0
     @State private var currentImage: UIImage?
     @State private var currentVideoPlayer: AVPlayer?
     @State private var isCurrentAssetVideo = false
+    @State private var currentAsset: PHAsset?
     @State private var currentPhotoDate: Date?
     @State private var currentPhotoLocation: String?
     @State private var isLoading = true
@@ -43,8 +55,10 @@ struct ContentView: View {
     @EnvironmentObject var purchaseManager: PurchaseManager
     @State private var showingSubscriptionStatus = false
     @State private var showingAdModal = false
-    @State private var showingPersistentUpgrade = false
+
     @State private var showingRewardedAd = false
+    @State private var justWatchedAd = false
+    @State private var paywallTrigger = 0 // Add this to force refresh
     
     // Tutorial overlay states - moved to TutorialOverlay component
     
@@ -63,11 +77,18 @@ struct ContentView: View {
     // Separate progress tracking for each filter and overall
     @State private var filterProcessedCounts: [PhotoFilter: Int] = [:]
     
+    // Content type selection
+    @State private var selectedContentType: ContentType
+    
     // Persistence keys
     private let processedPhotoIdsKey = "processedPhotoIds"
     private let totalProcessedKey = "totalProcessed"
     private let selectedFilterKey = "selectedFilter"
     private let filterProcessedCountsKey = "filterProcessedCounts"
+    private let selectedContentTypeKey = "selectedContentType"
+    private let totalPhotosDeletedKey = "totalPhotosDeleted"
+    private let totalStorageSavedKey = "totalStorageSaved"
+    private let swipeDaysKey = "swipeDays"
     
 
     
@@ -76,9 +97,19 @@ struct ContentView: View {
     @State private var preloadedVideos: [String: AVPlayer] = [:]
     @State private var isPreloading = false
     
+    // Add state to track if category is completed vs empty
+    @State private var isCategoryCompleted = false
+    
+    // Track total photos deleted for achievements
+    @State private var totalPhotosDeleted = 0
+    
+    // Stats tracking
+    @State private var totalStorageSaved: Double = 0.0
+    @State private var swipeDays: Set<String> = []
+    
     // Add zoom and share states
     @State private var showingShareSheet = false
-    @State private var imageToShare: UIImage?
+    @State private var itemToShare: Any?
     
     // Image quality and tap states
     @State private var isCurrentImageLowQuality = false
@@ -98,8 +129,39 @@ struct ContentView: View {
     let imageManager = PHImageManager.default()
     let batchSize = 10
     
+    // Computed properties
+    private var premiumStatusText: String {
+        switch purchaseManager.subscriptionStatus {
+        case .active:
+            return "Active Premium Subscription"
+        case .trial:
+            return "Free Trial Active"
+        case .notSubscribed:
+            return "Free Plan (10 swipes/day)"
+        case .expired:
+            return "Trial Expired"
+        case .cancelled:
+            return "Subscription Cancelled"
+        }
+    }
+    
+    // Persist batch index across view refreshes
+    @AppStorage("currentBatchIndex") private var batchIndex: Int = 0
+    
+    // Add UserDefaults key for persisted swiped photos
+    private let swipedPhotosKey = "swipedPhotosCurrentBatch"
+    
     var body: some View {
-        NavigationView {
+        let _ = print("🔍 Debug: View body rendered - showingReviewScreen = \(showingReviewScreen), swipedPhotos.count = \(swipedPhotos.count)")
+        
+        // Restore swiped photos if they were lost during view refresh
+        if swipedPhotos.isEmpty && !showingReviewScreen {
+            DispatchQueue.main.async {
+                restoreSwipedPhotos()
+            }
+        }
+        
+        return NavigationView {
             ZStack {
                 // Background
                 Color(.systemBackground)
@@ -109,6 +171,8 @@ struct ContentView: View {
                     completedView
                 } else if isLoading {
                     loadingView
+                } else if photos.isEmpty && isCategoryCompleted {
+                    completedView
                 } else if photos.isEmpty {
                     noPhotosView
                 } else if showingCheckpointScreen {
@@ -117,8 +181,8 @@ struct ContentView: View {
                     continueScreen
                 } else if showingReviewScreen {
                     reviewScreen
-                } else if !purchaseManager.canSwipe && (purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired) {
-                    // Show subscription upgrade screen if daily limit reached
+                } else if !purchaseManager.canSwipeForFilter(selectedFilter) && !justWatchedAd && (purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired) {
+                    // Show subscription upgrade screen if daily limit reached (but not if user just watched an ad)
                     swipeLimitReachedView
                 } else {
                     photoView
@@ -144,9 +208,11 @@ struct ContentView: View {
                 
                 // Subscription status overlay
                 if showingSubscriptionStatus {
-                    SubscriptionStatusView {
-                        showingSubscriptionStatus = false
-                    }
+                    SubscriptionStatusView(
+                        onDismiss: {
+                            showingSubscriptionStatus = false
+                        }
+                    )
                 }
                 
                 // Ad modal
@@ -163,12 +229,7 @@ struct ContentView: View {
                     }
                 }
                 
-                // Persistent upgrade screen
-                if showingPersistentUpgrade {
-                    PersistentUpgradeView {
-                        showingPersistentUpgrade = false
-                    }
-                }
+
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -184,15 +245,28 @@ struct ContentView: View {
                 ToolbarItem(placement: .principal) {
                     Text("CleanSwipe")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
+                        .foregroundStyle(
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color(red: 0.4, green: 0.8, blue: 1.0), // Light blue
+                                    Color(red: 0.6, green: 0.4, blue: 1.0), // Purple
+                                    Color(red: 1.0, green: 0.6, blue: 0.8)  // Pink
+                                ]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack {
-                        if !isLoading && !photos.isEmpty && !isCompleted && !showingReviewScreen && !showingContinueScreen && !showingCheckpointScreen {
-                            Text("\(currentPhotoIndex + 1) / \(min(batchSize, currentBatch.count))")
-                                .font(.system(size: 16, weight: .medium, design: .rounded))
-                                .foregroundColor(.secondary)
+                        // Show photo position counter for subscribers only
+                        if purchaseManager.subscriptionStatus == .trial || purchaseManager.subscriptionStatus == .active {
+                            if !isLoading && !photos.isEmpty && !isCompleted && !showingReviewScreen && !showingContinueScreen && !showingCheckpointScreen {
+                                Text("\(currentPhotoIndex + 1) / \(min(batchSize, currentBatch.count))")
+                                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
                         }
                         
                         // Show swipe limit for non-subscribers only
@@ -201,11 +275,12 @@ struct ContentView: View {
                                 Text("Swipes")
                                     .font(.system(size: 10, weight: .regular))
                                     .foregroundColor(.secondary)
-                                let totalUsed = purchaseManager.dailySwipeCount
+                                let filterKey = filterKey(for: selectedFilter)
+                                let totalUsed = purchaseManager.filterSwipeCounts[filterKey, default: 0]
                                 let totalAvailable = 10 + purchaseManager.rewardedSwipesRemaining
                                 Text("\(totalUsed)/\(totalAvailable)")
                                     .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(purchaseManager.canSwipe ? .primary : .red)
+                                    .foregroundColor(purchaseManager.canSwipeForFilter(selectedFilter) ? .primary : .red)
                                 if purchaseManager.rewardedSwipesRemaining > 0 {
                                     Text("+\(purchaseManager.rewardedSwipesRemaining) bonus")
                                         .font(.system(size: 8, weight: .regular))
@@ -227,6 +302,9 @@ struct ContentView: View {
             // Note: Tutorial tap handling moved to TutorialOverlay component
         }
         .onAppear {
+            print("🔍 Debug: onAppear() - START")
+            print("🔍 Debug: onAppear() - Current swipedPhotos.count = \(swipedPhotos.count)")
+            
             setupPhotoLibraryObserver()
             loadPersistedData()
             requestPhotoAccess()
@@ -236,30 +314,47 @@ struct ContentView: View {
                 await purchaseManager.checkSubscriptionStatus()
             }
             
-            // Show persistent upgrade screen for non-subscribers
-            checkAndShowPersistentUpgrade()
+            // Check if batch is complete and show review screen if needed
+            if swipedPhotos.count >= batchSize {
+                showReviewScreen()
+            }
             
-            // Note: Tutorial handling moved to TutorialOverlay component
+            // Only restore swiped photos if we don't already have them and we're not in review mode
+            if swipedPhotos.isEmpty && !showingReviewScreen {
+                print("🔍 Debug: onAppear() - Restoring swiped photos")
+                restoreSwipedPhotos()
+            } else {
+                print("🔍 Debug: onAppear() - Skipping restore - swipedPhotos.count = \(swipedPhotos.count), showingReviewScreen = \(showingReviewScreen)")
+            }
+            
+            print("🔍 Debug: onAppear() - END - swipedPhotos.count = \(swipedPhotos.count)")
         }
         .onDisappear {
             // Clean up preloaded content to prevent memory leaks
             cleanupAllPreloadedContent()
         }
         .sheet(isPresented: $showingShareSheet) {
-            if let image = imageToShare {
-                ShareSheet(activityItems: [image])
+            if let item = itemToShare {
+                ShareSheet(activityItems: [item])
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
         }
         // Note: Tutorial onChange handler moved to TutorialOverlay component
         .onChange(of: purchaseManager.subscriptionStatus) { oldValue, newValue in
             handleSubscriptionStatusChange(newValue)
             
-            // Dismiss persistent upgrade screen if user becomes a subscriber
-            if newValue == .trial || newValue == .active {
-                showingPersistentUpgrade = false
-            }
+
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            // Check photo access first when app becomes active
+            let photoStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            if photoStatus == .denied || photoStatus == .restricted {
+                // Photo access lost, redirect to welcome flow
+                onPhotoAccessLost?()
+                return
+            }
+            
             // Refresh when app becomes active
             refreshPhotos()
             
@@ -267,9 +362,17 @@ struct ContentView: View {
             Task {
                 await purchaseManager.checkSubscriptionStatus()
             }
-            
-            // Show persistent upgrade screen for non-subscribers
-            checkAndShowPersistentUpgrade()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openOnThisDayFilter)) { _ in
+            // Handle notification action to open "On This Day" filter
+            selectedFilter = .onThisDay
+            showingMenu = false
+            resetAndReload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .startSwiping)) { _ in
+            // Handle notification action to start swiping
+            // Just refresh photos to show current content
+            refreshPhotos()
         }
         .alert("Photos Access Required", isPresented: $showingPermissionAlert) {
             Button("Settings") {
@@ -277,13 +380,44 @@ struct ContentView: View {
                     UIApplication.shared.open(settingsURL)
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Go to Welcome Screen") {
+                // Redirect to welcome flow when user chooses to go back
+                onPhotoAccessLost?()
+            }
         } message: {
-            Text("Please allow access to your photos to use CleanSwipe.")
+            Text("Please allow access to your photos to use CleanSwipe. You can either open Settings to enable access or return to the welcome screen.")
         }
         .sheet(isPresented: $showingMenu) {
             menuView
         }
+        .presentPaywallIfNeeded(
+            requiredEntitlementIdentifier: "Premium",
+            purchaseCompleted: { customerInfo in
+                // Handle successful purchase
+            },
+            restoreCompleted: { customerInfo in
+                // Handle successful restore
+            }
+        )
+        .onChange(of: paywallTrigger) { oldValue, newValue in
+            // Prevent paywall from showing if user just watched an ad and has swiped photos
+            if justWatchedAd && swipedPhotos.count >= batchSize {
+                print("🔍 Debug: Blocking paywall trigger - user just watched ad and has \(swipedPhotos.count) swiped photos")
+                // Reset the paywall trigger to prevent it from showing
+                DispatchQueue.main.async {
+                    paywallTrigger = oldValue
+                }
+            }
+        }
+        .onChange(of: showingReviewScreen) { oldValue, newValue in
+            // If review screen is being hidden and we have swiped photos, preserve them
+            if oldValue == true && newValue == false && swipedPhotos.count >= batchSize {
+                print("🔍 Debug: Review screen hidden, preserving \(swipedPhotos.count) swiped photos")
+                // Save the current swiped photos to prevent loss
+                saveSwipedPhotos()
+            }
+        }
+        .id(paywallTrigger) // Force view refresh when trigger changes
     }
     
     private var progressBar: some View {
@@ -296,7 +430,7 @@ struct ContentView: View {
                 .frame(height: 6)
                 .padding(.horizontal)
             
-            Text("\(currentFilterProcessed) / \(photos.count) photos processed")
+            Text("\(currentFilterProcessed) / \(photos.count) \(contentTypeText) processed")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
         }
@@ -396,7 +530,25 @@ struct ContentView: View {
                                     }
                             )
                             .onAppear {
+                                // Ensure video autoplays and loops
+                                print("VideoPlayer appeared, starting playback...")
+                                player.seek(to: .zero)
                                 player.play()
+                                player.actionAtItemEnd = .none
+                                
+                                // Verify playback started
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    if player.rate == 0 {
+                                        print("Video not playing in onAppear, restarting...")
+                                        player.seek(to: .zero)
+                                        player.play()
+                                    } else {
+                                        print("Video is playing successfully")
+                                    }
+                                }
+                            }
+                            .onDisappear {
+                                player.pause()
                             }
                     } else {
                         RoundedRectangle(cornerRadius: 16)
@@ -580,10 +732,7 @@ struct ContentView: View {
                     }
                     .disabled(isUndoing)
                 }
-                
-                Text("Swipe right to keep, left to delete")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(.secondary)
+
             }
             .padding(.bottom, 60) // Reduced padding to give more space to photo
         }
@@ -778,13 +927,14 @@ struct ContentView: View {
             
             VStack(spacing: 8) {
                 let currentFilterProcessed = filterProcessedCounts[selectedFilter] ?? 0
-                Text("Photos processed: \(currentFilterProcessed)")
+                let totalAvailableForFilter = countPhotosForFilter(selectedFilter) + currentFilterProcessed
+                Text("\(contentTypeText.capitalized) processed: \(currentFilterProcessed) of \(totalAvailableForFilter)")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.secondary)
                 
                 let remainingPhotos = photos.count - ((batchIndex + 1) * batchSize)
                 if remainingPhotos > 0 {
-                    Text("\(remainingPhotos) photos remaining")
+                    Text("\(remainingPhotos) photos remaining in this session")
                         .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
@@ -847,6 +997,42 @@ struct ContentView: View {
                 )
                 
                 List {
+                    // Subscribe button for non-pro users
+                    if purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired {
+                        Section {
+                            Button(action: {
+                                showingMenu = false // Dismiss menu first
+                                paywallTrigger += 1 // Force refresh to trigger paywall
+                            }) {
+                                HStack {
+                                    Image(systemName: "crown.fill")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.yellow)
+                                        .frame(width: 24, height: 24)
+                                        .background(Color.clear)
+                                        .clipShape(Circle())
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Upgrade to Pro")
+                                            .font(.system(size: 16, weight: .medium))
+                                            .foregroundColor(.primary)
+                                        
+                                        Text("Unlock unlimited swipes and premium features")
+                                            .font(.system(size: 14))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    
                     Section {
                         NavigationLink(destination: settingsView) {
                             HStack {
@@ -875,6 +1061,90 @@ struct ContentView: View {
                             }
                         }
                         .buttonStyle(PlainButtonStyle())
+                        
+                        NavigationLink(destination: statsView) {
+                            HStack {
+                                Image(systemName: "chart.bar.fill")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.green)
+                                    .frame(width: 24, height: 24)
+                                    .background(Color.clear)
+                                    .clipShape(Circle())
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("My Stats")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.primary)
+                                    
+                                    Text("View your progress and achievements")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        NavigationLink(destination: faqView) {
+                            HStack {
+                                Image(systemName: "questionmark.circle.fill")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.orange)
+                                    .frame(width: 24, height: 24)
+                                    .background(Color.clear)
+                                    .clipShape(Circle())
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("FAQ & Help")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.primary)
+                                    
+                                    Text("Common questions and guides")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        Button(action: rateApp) {
+                            HStack {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.yellow)
+                                    .frame(width: 24, height: 24)
+                                    .background(Color.clear)
+                                    .clipShape(Circle())
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Rate CleanSwipe")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.primary)
+                                    
+                                    Text("Help us with a review")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.secondary)
+                                }
+                                
+                                Spacer()
+                                
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
                     
                     Section {
@@ -883,13 +1153,44 @@ struct ContentView: View {
                             title: "Random",
                             subtitle: "Mixed photos from all years",
                             isSelected: selectedFilter == .random,
-                            processedCount: filterProcessedCounts[.random] ?? 0,
+                            processedCount: totalProcessed,
                             action: {
                                 selectedFilter = .random
                                 showingMenu = false
                                 resetAndReload()
                             },
-                            photoCounter: { _ in countPhotosForFilter(.random) }
+                            photoCounter: { countPhotosForFilter(.random) },
+                            contentType: selectedContentType
+                        )
+                        
+                        AsyncMenuRow(
+                            icon: "calendar.badge.clock",
+                            title: "On this Day",
+                            subtitle: "Photos from this day in previous years",
+                            isSelected: selectedFilter == .onThisDay,
+                            processedCount: filterProcessedCounts[.onThisDay] ?? 0,
+                            action: {
+                                selectedFilter = .onThisDay
+                                showingMenu = false
+                                resetAndReload()
+                            },
+                            photoCounter: { countPhotosForFilter(.onThisDay) },
+                            contentType: selectedContentType
+                        )
+                        
+                        AsyncMenuRow(
+                            icon: "rectangle.3.group",
+                            title: "Screenshots",
+                            subtitle: "Photos from your screenshots folder",
+                            isSelected: selectedFilter == .screenshots,
+                            processedCount: filterProcessedCounts[.screenshots] ?? 0,
+                            action: {
+                                selectedFilter = .screenshots
+                                showingMenu = false
+                                resetAndReload()
+                            },
+                            photoCounter: { countPhotosForFilter(.screenshots) },
+                            contentType: selectedContentType
                         )
                     }
                     
@@ -908,7 +1209,8 @@ struct ContentView: View {
                                         showingMenu = false
                                         resetAndReload()
                                     },
-                                    photoCounter: { _ in countPhotosForFilter(yearFilter) }
+                                    photoCounter: { countPhotosForFilter(yearFilter) },
+                                    contentType: selectedContentType
                                 )
                             }
                         }
@@ -937,6 +1239,99 @@ struct ContentView: View {
     
     private var settingsView: some View {
         List {
+            // Premium Status Section
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Image(systemName: purchaseManager.subscriptionStatus == .active || purchaseManager.subscriptionStatus == .trial ? "crown.fill" : "crown")
+                                .foregroundColor(purchaseManager.subscriptionStatus == .active || purchaseManager.subscriptionStatus == .trial ? .yellow : .secondary)
+                                .font(.system(size: 16, weight: .medium))
+                            
+                            Text("Premium Status")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.primary)
+                        }
+                        
+                        Text(premiumStatusText)
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    if purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired {
+                        Button("Upgrade") {
+                            showingMenu = false // Dismiss settings menu first
+                            paywallTrigger += 1 // Force refresh to trigger paywall
+                        }
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Subscription")
+            }
+            
+            // Content Type Section
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Content Type")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.primary)
+                    
+                    Text("Choose what type of content to review")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 4)
+                
+                ForEach(ContentType.allCases, id: \.self) { contentType in
+                    HStack {
+                        Image(systemName: contentType.icon)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.blue)
+                            .frame(width: 24, height: 24)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(contentType.rawValue)
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.primary)
+                            
+                            Text(contentType.description)
+                                .font(.system(size: 14))
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                        }
+                        
+                        Spacer()
+                        
+                        if selectedContentType == contentType {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.blue)
+                                .font(.system(size: 16, weight: .medium))
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedContentType = contentType
+                        savePersistedData()
+                        // Notify parent of content type change
+                        onContentTypeChange?(contentType)
+                        // Reload photos with new content type
+                        refreshPhotos()
+                    }
+                }
+            } header: {
+                Text("Content Selection")
+            }
+            
+            // Photo Quality Section
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Photo Quality")
@@ -1064,6 +1459,10 @@ struct ContentView: View {
                     DebugButton(title: "🔄 Reset Progress") {
                         resetProgress()
                     }
+                    
+                    DebugButton(title: "🔔 Test Notification") {
+                        notificationManager.testNotification()
+                    }
                 }
             } header: {
                 Text("Development")
@@ -1074,6 +1473,479 @@ struct ContentView: View {
         .listStyle(InsetGroupedListStyle())
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
+    }
+    
+    private var statsView: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Header
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.green)
+                    
+                    Text("My Stats")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.primary)
+                    
+                    Text("Your cleaning journey progress")
+                        .font(.system(size: 16))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 20)
+                .onAppear {
+                    // Refresh stats data when view appears
+                    loadPersistedData()
+                }
+                
+                // Stats Cards
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 2), spacing: 16) {
+                    // Photos Deleted Card
+                    VStack(spacing: 12) {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(.red)
+                        
+                        Text("\(totalPhotosDeleted)")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(.primary)
+                            .onAppear {
+                                print("📊 Debug: Stats view showing totalPhotosDeleted: \(totalPhotosDeleted)")
+                            }
+                        
+                        Text("Photos Deleted")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    
+                    // Storage Saved Card
+                    VStack(spacing: 12) {
+                        Image(systemName: "externaldrive.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(.blue)
+                        
+                        Text(formatStorage(totalStorageSaved))
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundColor(.primary)
+                            .onAppear {
+                                print("📊 Debug: Stats view showing totalStorageSaved: \(totalStorageSaved) MB")
+                            }
+                        
+                        Text("Storage Saved")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                .padding(.horizontal, 20)
+                
+                // Swipe Streak Card
+                VStack(spacing: 16) {
+                    HStack {
+                        Image(systemName: "calendar.badge.clock")
+                            .font(.system(size: 24))
+                            .foregroundColor(.orange)
+                        
+                        Text("Swipe Streak")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.primary)
+                        
+                        Spacer()
+                        
+                        Text("\(swipeDays.count) days")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // Calendar Grid
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
+                        ForEach(0..<365, id: \.self) { dayIndex in
+                            let date = Calendar.current.date(byAdding: .day, value: -dayIndex, to: Date()) ?? Date()
+                            let dateString = formatDateForStats(date)
+                            let isFilled = swipeDays.contains(dateString)
+                            
+                            Rectangle()
+                                .fill(isFilled ? Color(red: 0.7, green: 0.9, blue: 1.0) : Color(.systemGray5))
+                                .frame(height: 8)
+                                .clipShape(RoundedRectangle(cornerRadius: 2))
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 20)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 20)
+                
+                // Achievements Section
+                VStack(spacing: 16) {
+                    HStack {
+                        Image(systemName: "trophy.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.yellow)
+                        
+                        Text("Achievements")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.primary)
+                        
+                        Spacer()
+                    }
+                    
+                    VStack(spacing: 12) {
+                        AchievementRow(
+                            title: "First Steps",
+                            description: "Delete your first photo",
+                            isUnlocked: totalPhotosDeleted >= 1,
+                            icon: "1.circle.fill"
+                        )
+                        
+                        AchievementRow(
+                            title: "Getting Started",
+                            description: "Delete 10 photos",
+                            isUnlocked: totalPhotosDeleted >= 10,
+                            icon: "10.circle.fill"
+                        )
+                        
+                        AchievementRow(
+                            title: "Photo Cleaner",
+                            description: "Delete 50 photos",
+                            isUnlocked: totalPhotosDeleted >= 50,
+                            icon: "50.circle.fill"
+                        )
+                        
+                        AchievementRow(
+                            title: "Storage Saver",
+                            description: "Save 100 MB of storage",
+                            isUnlocked: totalStorageSaved >= 100,
+                            icon: "externaldrive.badge.checkmark"
+                        )
+                        
+                        AchievementRow(
+                            title: "Week Warrior",
+                            description: "Swipe for 7 consecutive days",
+                            isUnlocked: swipeDays.count >= 7,
+                            icon: "calendar.badge.plus"
+                        )
+                        
+                        AchievementRow(
+                            title: "Month Master",
+                            description: "Swipe for 30 days",
+                            isUnlocked: swipeDays.count >= 30,
+                            icon: "calendar.badge.clock"
+                        )
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 20)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 20)
+                
+                Spacer(minLength: 40)
+            }
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("My Stats")
+        .navigationBarTitleDisplayMode(.large)
+    }
+    
+    private func formatStorage(_ bytes: Double) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes * 1024 * 1024)) // Convert MB to bytes
+    }
+    
+    private func formatDateForStats(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+    
+    private func extractStorageMB(from storageString: String) -> Double? {
+        // Extract number from strings like "2.5 MB", "1.2 GB", etc.
+        let pattern = "([0-9]+(?:\\.[0-9]+)?)\\s*(MB|GB)"
+        let regex = try? NSRegularExpression(pattern: pattern, options: [])
+        
+        if let match = regex?.firstMatch(in: storageString, options: [], range: NSRange(location: 0, length: storageString.count)) {
+            if let numberRange = Range(match.range(at: 1), in: storageString),
+               let unitRange = Range(match.range(at: 2), in: storageString) {
+                let numberString = String(storageString[numberRange])
+                let unit = String(storageString[unitRange])
+                
+                if let number = Double(numberString) {
+                    if unit == "GB" {
+                        return number * 1024 // Convert GB to MB
+                    } else if unit == "MB" {
+                        return number
+                    }
+                }
+            }
+        }
+        return nil
+    }
+    
+    private func filterKey(for filter: PhotoFilter) -> String {
+        switch filter {
+        case .random:
+            return "random"
+        case .onThisDay:
+            return "onThisDay"
+        case .screenshots:
+            return "screenshots"
+        case .year(let year):
+            return "year_\(year)"
+        }
+    }
+    
+    private func AchievementRow(title: String, description: String, isUnlocked: Bool, icon: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 24))
+                .foregroundColor(isUnlocked ? .yellow : .gray)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(isUnlocked ? .primary : .secondary)
+                
+                Text(description)
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            if isUnlocked {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.green)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+    
+    private var faqView: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Header
+                VStack(spacing: 8) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.orange)
+                    
+                    Text("FAQ & Help")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.primary)
+                    
+                    Text("Everything you need to know about CleanSwipe")
+                        .font(.system(size: 16))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 20)
+                
+                // FAQ Sections
+                VStack(spacing: 20) {
+                    // Getting Started Section
+                    FAQSection(
+                        title: "Getting Started",
+                        icon: "play.circle.fill",
+                        color: .blue
+                    ) {
+                        FAQItem(
+                            question: "How does CleanSwipe work?",
+                            answer: "CleanSwipe helps you declutter your photo library by showing you photos one at a time. Simply swipe right to keep a photo or swipe left to delete it. The app processes photos in batches of 10 and shows you a review screen where you can confirm or undo your choices before any deletion occurs."
+                        )
+                        
+                        FAQItem(
+                            question: "Is it safe to delete photos?",
+                            answer: "Yes! CleanSwipe uses iOS's native photo deletion system with multiple safety layers. Photos are processed in batches of 10, and you must review and confirm each batch before any deletion occurs. When confirmed, photos are moved to your Recently Deleted album where they stay for 30 days before being permanently removed. You can always recover them from Recently Deleted if needed."
+                        )
+                        
+                        FAQItem(
+                            question: "What photo formats are supported?",
+                            answer: "CleanSwipe supports all photo and video formats that iOS supports, including JPEG, HEIF, PNG, MOV, MP4, and more. You can choose to review photos only, videos only, or both in the Settings."
+                        )
+                        
+                        FAQItem(
+                            question: "How does the batch processing work?",
+                            answer: "After swiping through 10 photos, you'll see a review screen showing all your choices. You can change any decision before confirming. Nothing is deleted until you tap 'Confirm Deletion'. This ensures you're always in control and can undo any mistakes."
+                        )
+                    }
+                    
+                    // Filters Section
+                    FAQSection(
+                        title: "Photo Filters",
+                        icon: "slider.horizontal.3",
+                        color: .green
+                    ) {
+                        FAQItem(
+                            question: "What are the different filter options?",
+                            answer: "• Random: Mixed photos from all years\n• On This Day: Photos from the same day in previous years\n• Screenshots: Only your screenshot photos\n• By Year: Photos from specific years (2023, 2022, etc.)"
+                        )
+                        
+                        FAQItem(
+                            question: "Do the 10 daily swipes count across all filters?",
+                            answer: "No, the 10 daily swipes are separate for each filter. This prevents users from exploiting the system by switching between filters. Each filter tracks its own progress independently."
+                        )
+                        
+                        FAQItem(
+                            question: "Can I switch filters mid-session?",
+                            answer: "Yes! You can change filters at any time from the menu. Your progress in each filter is saved separately, so you won't lose your place when switching between them."
+                        )
+                    }
+                    
+                    // Premium Features Section
+                    FAQSection(
+                        title: "Premium Features",
+                        icon: "crown.fill",
+                        color: .yellow
+                    ) {
+                        FAQItem(
+                            question: "What's included in the free version?",
+                            answer: "The free version includes 10 swipes per day, access to all photo filters, basic stats tracking, and achievement notifications. You can also watch ads to earn bonus swipes."
+                        )
+                        
+                        FAQItem(
+                            question: "What do I get with Premium?",
+                            answer: "Premium unlocks unlimited daily swipes, no ads, priority support, and exclusive features. Your progress and achievements are preserved when you upgrade."
+                        )
+                        
+                        FAQItem(
+                            question: "How do I upgrade to Premium?",
+                            answer: "Tap the 'Upgrade to Pro' button in the menu or when you reach your daily limit. You can choose from monthly or annual subscription options with a free trial available."
+                        )
+                    }
+                    
+                    // Technical Section
+                    FAQSection(
+                        title: "Technical Support",
+                        icon: "wrench.and.screwdriver.fill",
+                        color: .purple
+                    ) {
+                        FAQItem(
+                            question: "Why can't I see my photos?",
+                            answer: "Make sure you've granted CleanSwipe permission to access your photos in Settings > Privacy & Security > Photos. If you've denied access, you'll need to enable it in your device settings."
+                        )
+                        
+                        FAQItem(
+                            question: "The app is slow or not loading photos",
+                            answer: "Try switching to 'Storage Optimized' mode in Settings. This uses local photos when possible and only downloads from iCloud when necessary, which can significantly improve performance."
+                        )
+                        
+                        FAQItem(
+                            question: "How do I reset my progress?",
+                            answer: "Go to Settings and use the 'Reset Progress' option in the Debug section. This will clear your processed photos but keep your achievements and total stats intact."
+                        )
+                    }
+                    
+                    // Privacy & Data Section
+                    FAQSection(
+                        title: "Privacy & Data",
+                        icon: "lock.shield.fill",
+                        color: .red
+                    ) {
+                        FAQItem(
+                            question: "Does CleanSwipe upload my photos?",
+                            answer: "No! CleanSwipe never uploads, stores, or transmits your photos. All processing happens locally on your device. We only access your photos to display them for review and deletion."
+                        )
+                        
+                        FAQItem(
+                            question: "What data does CleanSwipe collect?",
+                            answer: "We only collect anonymous usage statistics to improve the app (like which features are used most). Your photos, personal data, and deletion choices are never shared or stored on our servers."
+                        )
+                        
+                        FAQItem(
+                            question: "Can I use CleanSwipe offline?",
+                            answer: "Yes! CleanSwipe works completely offline for photos already stored on your device. You only need internet for iCloud photos that aren't downloaded locally."
+                        )
+                    }
+                }
+                .padding(.horizontal, 20)
+                
+                Spacer(minLength: 40)
+            }
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("FAQ & Help")
+        .navigationBarTitleDisplayMode(.large)
+    }
+    
+    private func FAQSection<Content: View>(
+        title: String,
+        icon: String,
+        color: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 24))
+                    .foregroundColor(color)
+                
+                Text(title)
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.primary)
+                
+                Spacer()
+            }
+            
+            VStack(spacing: 12) {
+                content()
+            }
+        }
+        .padding(.vertical, 20)
+        .padding(.horizontal, 20)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+    
+    private func FAQItem(question: String, answer: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(question)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+            
+            Text(answer)
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 8)
+    }
+    
+    private func rateApp() {
+        // For now, show an alert with instructions
+        // In production, this would open the App Store review page
+        let alert = UIAlertController(
+            title: "Rate CleanSwipe",
+            message: "Thank you for using CleanSwipe! To rate the app:\n\n1. Open the App Store\n2. Search for 'CleanSwipe'\n3. Tap 'Write a Review'\n4. Share your experience\n\nYour feedback helps us improve and helps other users discover the app!",
+            preferredStyle: .alert
+        )
+        
+        alert.addAction(UIAlertAction(title: "Open App Store", style: .default) { _ in
+            // Open App Store to CleanSwipe page
+            if let url = URL(string: "https://apps.apple.com/app/cleanswipe/id1234567890") {
+                UIApplication.shared.open(url)
+            }
+        })
+        
+        alert.addAction(UIAlertAction(title: "Later", style: .cancel))
+        
+        // Present the alert
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = windowScene.windows.first {
+            window.rootViewController?.present(alert, animated: true)
+        }
     }
     
     private var loadingView: some View {
@@ -1133,7 +2005,9 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
             
             VStack(spacing: 8) {
-                Text("Used today: \(purchaseManager.dailySwipeCount)/10")
+                let filterKey = filterKey(for: selectedFilter)
+                let totalUsed = purchaseManager.filterSwipeCounts[filterKey, default: 0]
+                Text("Used today: \(totalUsed)/10")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.secondary)
                 if purchaseManager.rewardedSwipesRemaining > 0 {
@@ -1146,7 +2020,7 @@ struct ContentView: View {
             VStack(spacing: 16) {
                 // Subscribe option
                 Button(action: {
-                    showingSubscriptionStatus = true
+                    paywallTrigger += 1 // Force refresh
                 }) {
                     VStack(spacing: 8) {
                         HStack {
@@ -1214,69 +2088,93 @@ struct ContentView: View {
     }
     
     private var completedView: some View {
-        VStack(spacing: 30) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 80))
-                .foregroundColor(.green)
-            
-            Text("All Done!")
-                .font(.system(size: 32, weight: .bold))
-                .foregroundColor(.primary)
-            
-            Text("You've reviewed all your photos.")
-                .font(.system(size: 18))
-                .foregroundColor(.secondary)
-            
-            VStack(spacing: 8) {
-                Text("Total processed: \(totalProcessed) photos")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.secondary)
+        ScrollView {
+            VStack(spacing: 30) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 80))
+                    .foregroundColor(.green)
                 
-                // Show breakdown by filter if there are multiple filters with progress
-                let filtersWithProgress = filterProcessedCounts.filter { $0.value > 0 }
-                if filtersWithProgress.count > 1 {
-                    VStack(spacing: 4) {
-                        Text("Breakdown by filter:")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.secondary)
-                        
-                        ForEach(Array(filtersWithProgress.keys), id: \.self) { filter in
-                            let count = filtersWithProgress[filter] ?? 0
-                            let filterName = filter.displayName
-                            Text("\(filterName): \(count) photos")
-                                .font(.system(size: 12))
+                Text("All Done!")
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.center)
+                
+                Text("You've reviewed all your photos in this category.")
+                    .font(.system(size: 18))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(nil)
+                
+                VStack(spacing: 8) {
+                    Text("Total processed: \(totalProcessed) photos")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    
+                    // Show breakdown by filter if there are multiple filters with progress
+                    let filtersWithProgress = filterProcessedCounts.filter { $0.value > 0 }
+                    if filtersWithProgress.count > 1 {
+                        VStack(spacing: 4) {
+                            Text("Breakdown by filter:")
+                                .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(.secondary)
+                            
+                            ForEach(Array(filtersWithProgress.keys), id: \.self) { filter in
+                                let count = filtersWithProgress[filter] ?? 0
+                                let filterName = filter.displayName
+                                Text("\(filterName): \(count) photos")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
                         }
                     }
                 }
-            }
-            
-            VStack(spacing: 12) {
-                Button("Check for New Photos") {
-                    refreshPhotos()
-                }
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.blue)
-                .frame(width: 200, height: 44)
-                .background(Color.blue.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.blue, lineWidth: 1)
-                )
-                .disabled(isRefreshing)
                 
-                Button("Start Over") {
-                    resetEverything()
+                VStack(spacing: 12) {
+                    Button("Change Filter") {
+                        showingMenu = true
+                    }
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.blue)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(Color.blue.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.blue, lineWidth: 1)
+                    )
+                    
+                    Button("Check for New Photos") {
+                        refreshPhotos()
+                    }
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.blue)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(Color.blue.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.blue, lineWidth: 1)
+                    )
+                    .disabled(isRefreshing)
+                    
+                    Button("Start Over") {
+                        resetEverything()
+                    }
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(Color.blue)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(.white)
-                .frame(width: 200, height: 50)
-                .background(Color.blue)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
             }
+            .padding()
         }
-        .padding()
     }
     
     private var networkWarningPopup: some View {
@@ -1341,6 +2239,14 @@ struct ContentView: View {
     private func refreshPhotos() {
         guard !isRefreshing else { return }
         
+        // Check photo access before refreshing
+        let photoStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if photoStatus == .denied || photoStatus == .restricted {
+            // Photo access lost, redirect to welcome flow
+            onPhotoAccessLost?()
+            return
+        }
+        
         isRefreshing = true
         
         // Small delay to show refresh indicator
@@ -1388,10 +2294,12 @@ struct ContentView: View {
         // Filter by content type
         let fetchResult: PHFetchResult<PHAsset>
         
-        if contentType == .photos {
+        switch selectedContentType {
+        case .photos:
             fetchResult = PHAsset.fetchAssets(with: .image, options: fetchOptions)
-        } else {
-            // For photos & videos, fetch both
+        case .videos:
+            fetchResult = PHAsset.fetchAssets(with: .video, options: fetchOptions)
+        case .photosAndVideos:
             fetchResult = PHAsset.fetchAssets(with: fetchOptions)
         }
         
@@ -1403,12 +2311,18 @@ struct ContentView: View {
             for i in 0..<fetchResult.count {
                 let asset = fetchResult.object(at: i)
                 
-                if self.contentType == .photos {
+                switch self.selectedContentType {
+                case .photos:
                     // Only include images
                     if asset.mediaType == .image {
                         loadedPhotos.append(asset)
                     }
-                } else {
+                case .videos:
+                    // Only include videos
+                    if asset.mediaType == .video {
+                        loadedPhotos.append(asset)
+                    }
+                case .photosAndVideos:
                     // Include both images and videos
                     if asset.mediaType == .image || asset.mediaType == .video {
                         loadedPhotos.append(asset)
@@ -1425,6 +2339,9 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 // Filter photos based on selection and exclude processed photos
                 self.photos = self.filterPhotos(loadedPhotos)
+                
+                // Check if current filter is completed
+                self.isCategoryCompleted = self.isCurrentFilterCompleted()
                 
                 self.isLoading = false
                 self.isRefreshing = false
@@ -1474,6 +2391,7 @@ struct ContentView: View {
         
         currentPhotoIndex = 0
         swipedPhotos.removeAll()
+        UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
         
         // Reset batch state
         batchHadDeletions = false
@@ -1510,6 +2428,7 @@ struct ContentView: View {
         }
         
         let asset = currentBatch[currentPhotoIndex]
+        currentAsset = asset
         isCurrentAssetVideo = asset.mediaType == .video
         
         // Check if we have a preloaded image/video
@@ -1809,7 +2728,23 @@ struct ContentView: View {
                     }
                     
                     self.currentVideoPlayer = player
-                    player.play() // Auto-play
+                    
+                    // Ensure video starts playing immediately with multiple attempts
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        player.seek(to: .zero)
+                        player.play()
+                        
+                        // Double-check playback after a short delay
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            if player.rate == 0 {
+                                print("Video not playing, attempting to restart...")
+                                player.seek(to: .zero)
+                                player.play()
+                            }
+                        }
+                    }
+                } else {
+                    print("Failed to load video asset")
                 }
             }
         }
@@ -1855,7 +2790,7 @@ struct ContentView: View {
     
     private func handleSwipe(action: SwipeAction) {
         // Check if user can swipe (daily limit for non-subscribers)
-        guard purchaseManager.canSwipe else {
+        guard purchaseManager.canSwipeForFilter(selectedFilter) else {
             // This should not happen anymore since the UI now shows swipeLimitReachedView
             // But keeping as fallback
             showingSubscriptionStatus = true
@@ -1875,8 +2810,8 @@ struct ContentView: View {
             currentVideoPlayer?.pause()
         }
         
-        // Record the swipe
-        purchaseManager.recordSwipe()
+        // Record the swipe for the current filter
+        purchaseManager.recordSwipe(for: selectedFilter)
         
         // Animate swipe
         withAnimation(.easeInOut(duration: 0.3)) {
@@ -1886,13 +2821,18 @@ struct ContentView: View {
         // Add to swiped photos
         swipedPhotos.append(SwipedPhoto(asset: asset, action: action))
         
+        // Save immediately to prevent loss during view refresh
+        saveSwipedPhotos()
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            // Check if we should show an ad
-            if purchaseManager.shouldShowAd() {
-                showAdModal()
-            } else {
-                nextPhoto()
-            }
+            // Check if this swipe completed a batch (10 photos)
+            let completedBatch = swipedPhotos.count >= batchSize
+            
+            print("🔍 Debug: handleSwipe() - completedBatch = \(completedBatch), swipedPhotos.count = \(swipedPhotos.count)")
+            
+            // Always go to next photo, no ads during swiping
+            print("🔍 Debug: handleSwipe() - calling nextPhoto()")
+            nextPhoto()
         }
     }
     
@@ -1904,14 +2844,43 @@ struct ContentView: View {
         isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
+        
+        // Safety check: ensure we have photos in the batch and index is valid
+        guard !currentBatch.isEmpty && currentPhotoIndex < currentBatch.count else {
+            print("🔍 Debug: nextPhoto() - batch is empty or index out of bounds. currentBatch.count: \(currentBatch.count), currentPhotoIndex: \(currentPhotoIndex)")
+            // If we have swiped photos, show review screen
+            if !swipedPhotos.isEmpty {
+                showReviewScreen()
+            } else {
+                // No photos to process, mark as completed
+                isCompleted = true
+            }
+            return
+        }
+        
+        // Get the current photo before incrementing index
+        let currentAsset = currentBatch[currentPhotoIndex]
         currentPhotoIndex += 1
         
         // Update both total and filter-specific counts
         totalProcessed += 1
         filterProcessedCounts[selectedFilter, default: 0] += 1
         
+        // If we're in Random mode, also increment the count for the photo's specific year
+        if case .random = selectedFilter, let photoYear = currentAsset.creationDate?.year {
+            let yearFilter = PhotoFilter.year(photoYear)
+            filterProcessedCounts[yearFilter, default: 0] += 1
+        }
+        
         // Save persistence data
         savePersistedData()
+        
+        // Check if we've completed a batch of 10 photos
+        if swipedPhotos.count >= batchSize {
+            print("🔍 Debug: nextPhoto() - batch completed! swipedPhotos.count = \(swipedPhotos.count)")
+            showReviewScreen()
+            return
+        }
         
         // Reset image quality states
         isCurrentImageLowQuality = false
@@ -1921,6 +2890,13 @@ struct ContentView: View {
         cleanupOldPreloadedContent()
         
         loadCurrentPhoto()
+        
+        // Reset justWatchedAd flag after moving to next photo
+        if justWatchedAd {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                justWatchedAd = false
+            }
+        }
     }
     
     private func cleanupOldPreloadedContent() {
@@ -1949,7 +2925,74 @@ struct ContentView: View {
     }
     
     private func showReviewScreen() {
+        print("🔍 Debug: showReviewScreen() called - setting showingReviewScreen = true")
+        print("🔍 Debug: swipedPhotos.count = \(swipedPhotos.count), batchSize = \(batchSize)")
         showingReviewScreen = true
+        print("🔍 Debug: showReviewScreen() - after setting showingReviewScreen = \(showingReviewScreen)")
+    }
+    
+    // MARK: - Ad Modal Functions
+    
+    private func dismissAdModal() {
+        print("🔍 Debug: dismissAdModal() - START - swipedPhotos.count = \(swipedPhotos.count), showingReviewScreen = \(showingReviewScreen)")
+        showingAdModal = false
+        justWatchedAd = true
+        // Reset drag offset to prevent overlay issues
+        dragOffset = .zero
+        
+        // Check if we're in the middle of a batch or after review screen
+        if swipedPhotos.count >= batchSize {
+            // Ad was shown after review screen, go to continue screen
+            print("🔍 Debug: dismissAdModal() - ad shown after review screen, going to continue screen")
+            showingContinueScreen = true
+        } else {
+            // Ad was shown during swiping, continue to next photo
+            print("🔍 Debug: dismissAdModal() - ad shown during swiping, continuing to next photo")
+            nextPhoto()
+        }
+        
+        // Delay PurchaseManager updates to prevent view refresh
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            // Reset the ad counter to prevent immediate paywall
+            self.purchaseManager.resetAdCounter()
+        }
+        
+        // Reset the justWatchedAd flag after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            justWatchedAd = false
+        }
+        print("🔍 Debug: dismissAdModal() - END - swipedPhotos.count = \(swipedPhotos.count), showingReviewScreen = \(showingReviewScreen)")
+    }
+    
+    private func dismissRewardedAd() {
+        showingRewardedAd = false
+        justWatchedAd = true
+        // Reset drag offset to prevent overlay issues
+        dragOffset = .zero
+        
+        // Check if we're in the middle of a batch or after review screen
+        if swipedPhotos.count >= batchSize {
+            // Ad was shown after review screen, go to continue screen
+            print("🔍 Debug: dismissRewardedAd() - ad shown after review screen, going to continue screen")
+            showingContinueScreen = true
+        } else {
+            // Ad was shown during swiping, continue to next photo
+            print("🔍 Debug: dismissRewardedAd() - ad shown during swiping, continuing to next photo")
+            nextPhoto()
+        }
+        
+        // Delay PurchaseManager updates to prevent view refresh
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            // Grant 50 additional swipes
+            self.purchaseManager.grantRewardedSwipes(50)
+            // Reset the ad counter to prevent immediate paywall
+            self.purchaseManager.resetAdCounter()
+        }
+        
+        // Reset the justWatchedAd flag after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            justWatchedAd = false
+        }
     }
     
     private func undoLastPhoto() {
@@ -1962,7 +3005,7 @@ struct ContentView: View {
         isUndoing = true
         
         // Remove the last action
-        swipedPhotos.removeLast()
+        let lastSwipedPhoto = swipedPhotos.removeLast()
         
         // Go back to the previous photo
         currentPhotoIndex -= 1
@@ -1971,11 +3014,18 @@ struct ContentView: View {
         totalProcessed -= 1
         filterProcessedCounts[selectedFilter, default: 0] = max(0, filterProcessedCounts[selectedFilter, default: 0] - 1)
         
+        // If we're in Random mode, also decrement the count for the photo's specific year
+        if case .random = selectedFilter, let photoYear = lastSwipedPhoto.asset.creationDate?.year {
+            let yearFilter = PhotoFilter.year(photoYear)
+            filterProcessedCounts[yearFilter, default: 0] = max(0, filterProcessedCounts[yearFilter, default: 0] - 1)
+        }
+        
         // Save persistence data
         savePersistedData()
         
         // Return to photo view if on review screen
         if showingReviewScreen {
+            print("🔍 Debug: undoLastPhoto() - setting showingReviewScreen = false")
             showingReviewScreen = false
         }
         
@@ -2011,6 +3061,7 @@ struct ContentView: View {
                 isUndoing = false
             }
         }
+        saveSwipedPhotos()
     }
     
     private func undoDelete(for asset: PHAsset) {
@@ -2044,6 +3095,7 @@ struct ContentView: View {
             
             // Clear the swipedPhotos array
             swipedPhotos.removeAll()
+            UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
             
             // Reset loading state
             isConfirmingBatch = false
@@ -2097,6 +3149,29 @@ struct ContentView: View {
                     
                     // Clear the swipedPhotos array since we've processed them
                     self.swipedPhotos.removeAll()
+                    UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
+                    
+                    // Update total photos deleted and schedule achievement notification
+                    if photosToDelete.count > 0 {
+                        self.totalPhotosDeleted += photosToDelete.count
+                        
+                        // Update storage saved (convert from string to MB)
+                        if let storageMB = self.extractStorageMB(from: self.lastBatchStorageSaved) {
+                            self.totalStorageSaved += storageMB
+                        }
+                        
+                        // Add today to swipe days
+                        let today = self.formatDateForStats(Date())
+                        self.swipeDays.insert(today)
+                        
+                        self.savePersistedData() // Save the updated stats
+                        
+                        self.notificationManager.scheduleAchievementReminder(
+                            photosDeleted: photosToDelete.count,
+                            storageSaved: self.lastBatchStorageSaved,
+                            totalPhotosDeleted: self.totalPhotosDeleted
+                        )
+                    }
                     
                     // Instead of resetting batchIndex to 0, calculate the correct position
                     // We need to account for the fact that photos were removed from the array
@@ -2125,6 +3200,7 @@ struct ContentView: View {
                     self.lastBatchStorageSaved = ""
                     // Clear the swipedPhotos array since we're resetting
                     self.swipedPhotos.removeAll()
+                    UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
                     // Could show an error alert here if needed
                     // For now, just reset to review screen
                     self.showingReviewScreen = true
@@ -2144,14 +3220,23 @@ struct ContentView: View {
             // Check if we're done with all photos
             let nextBatchStartIndex = (self.batchIndex + 1) * self.batchSize
             
-            if nextBatchStartIndex >= self.photos.count {
-                // Skip continue screen and go directly to completion
+            // Only mark as completed if we've actually processed all photos
+            // AND we have no more photos to process in the current batch
+            if nextBatchStartIndex >= self.photos.count && self.currentPhotoIndex >= self.currentBatch.count {
+                print("🔍 Debug: showContinueScreen() - all photos processed, marking as completed")
                 self.isCompleted = true
                 return
             }
             
-            // Always show continue screen for better UX and proper state management
-            self.showingContinueScreen = true
+            // Show ad after review screen for non-subscribers
+            if self.purchaseManager.shouldShowAd() {
+                print("🔍 Debug: showContinueScreen() - showing ad after review screen")
+                self.justWatchedAd = true // Set flag to prevent paywall after ad
+                self.showAdModal()
+            } else {
+                // Always show continue screen for better UX and proper state management
+                self.showingContinueScreen = true
+            }
         }
     }
     
@@ -2165,6 +3250,7 @@ struct ContentView: View {
             // Safety check: if we've gone beyond available photos, mark as completed
             let nextStartIndex = self.batchIndex * self.batchSize
             if nextStartIndex >= self.photos.count {
+                print("🔍 Debug: proceedToNextBatch() - all photos processed, marking as completed")
                 self.isCompleted = true
                 return
             }
@@ -2200,6 +3286,10 @@ struct ContentView: View {
         currentPhotoLocation = nil
         dragOffset = .zero
         swipedPhotos.removeAll()
+        UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
+        if showingReviewScreen {
+            print("🔍 Debug: confirmBatch() - setting showingReviewScreen = false")
+        }
         showingReviewScreen = false
         showingContinueScreen = false
         showingCheckpointScreen = false
@@ -2224,6 +3314,10 @@ struct ContentView: View {
         currentPhotoLocation = nil
         dragOffset = .zero
         swipedPhotos.removeAll()
+        UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
+        if showingReviewScreen {
+            print("🔍 Debug: resetEverything() - setting showingReviewScreen = false")
+        }
         showingReviewScreen = false
         showingContinueScreen = false
         showingCheckpointScreen = false
@@ -2238,6 +3332,17 @@ struct ContentView: View {
     }
     
     // MARK: - Helper Functions
+    
+    private var contentTypeText: String {
+        switch selectedContentType {
+        case .photos:
+            return "photos 📸"
+        case .videos:
+            return "videos 🎥"
+        case .photosAndVideos:
+            return "photos and videos 📸🎥"
+        }
+    }
     
     private func extractAvailableYears() {
         // Use a Set for better performance with large datasets
@@ -2271,8 +3376,26 @@ struct ContentView: View {
     private func filterPhotos(_ loadedPhotos: [PHAsset]) -> [PHAsset] {
         var filteredPhotos = loadedPhotos
         
-        // Filter by year if selected
-        if case .year(let year) = selectedFilter {
+        // Filter based on selected filter
+        switch selectedFilter {
+        case .random:
+            // No filtering needed for random
+            break
+        case .onThisDay:
+            let today = Date()
+            filteredPhotos = filteredPhotos.filter { asset in
+                guard let creationDate = asset.creationDate else { return false }
+                // Same day and month, but not this year
+                return creationDate.day == today.day && 
+                       creationDate.month == today.month && 
+                       creationDate.year != today.year
+            }
+        case .screenshots:
+            filteredPhotos = filteredPhotos.filter { asset in
+                // Check if the asset is in the screenshots album
+                return asset.mediaSubtypes.contains(.photoScreenshot)
+            }
+        case .year(let year):
             filteredPhotos = filteredPhotos.filter { asset in
                 asset.creationDate?.year == year
             }
@@ -2283,9 +3406,10 @@ struct ContentView: View {
             !processedPhotoIds.contains(asset.localIdentifier)
         }
         
+        // Shuffle photos for better user experience
         // For random filter, always shuffle to ensure true randomness
-        // For year filter, also shuffle to avoid showing photos in chronological order
-        if selectedFilter == .random {
+        // For other filters, also shuffle to avoid showing photos in chronological order
+        if selectedFilter == .random || selectedFilter == .onThisDay || selectedFilter == .screenshots {
             filteredPhotos = filteredPhotos.shuffled()
         } else if case .year = selectedFilter {
             filteredPhotos = filteredPhotos.shuffled()
@@ -2298,11 +3422,32 @@ struct ContentView: View {
         // Use a more efficient counting method
         var count = 0
         for asset in allPhotos {
+            // Check if photo matches the content type
+            let matchesContentType: Bool
+            switch selectedContentType {
+            case .photos:
+                matchesContentType = asset.mediaType == .image
+            case .videos:
+                matchesContentType = asset.mediaType == .video
+            case .photosAndVideos:
+                matchesContentType = asset.mediaType == .image || asset.mediaType == .video
+            }
+            
+            guard matchesContentType else { continue }
+            
             // Check if photo matches the filter
             let matchesFilter: Bool
             switch filter {
             case .random:
                 matchesFilter = true // All photos match random filter
+            case .onThisDay:
+                guard let creationDate = asset.creationDate else { continue }
+                let today = Date()
+                matchesFilter = creationDate.day == today.day && 
+                               creationDate.month == today.month && 
+                               creationDate.year != today.year
+            case .screenshots:
+                matchesFilter = asset.mediaSubtypes.contains(.photoScreenshot)
             case .year(let year):
                 matchesFilter = asset.creationDate?.year == year
             }
@@ -2317,6 +3462,53 @@ struct ContentView: View {
     
     private func countPhotosForYear(_ year: Int) -> Int {
         return countPhotosForFilter(.year(year))
+    }
+    
+    private func isCurrentFilterCompleted() -> Bool {
+        // Check if there are any unprocessed photos in the current filter
+        return countPhotosForFilter(selectedFilter) == 0
+    }
+    
+    private func getTotalPhotosInCurrentFilter() -> Int {
+        // Count all photos in the current filter (including processed ones)
+        var count = 0
+        for asset in allPhotos {
+            // Check if photo matches the content type
+            let matchesContentType: Bool
+            switch selectedContentType {
+            case .photos:
+                matchesContentType = asset.mediaType == .image
+            case .videos:
+                matchesContentType = asset.mediaType == .video
+            case .photosAndVideos:
+                matchesContentType = asset.mediaType == .image || asset.mediaType == .video
+            }
+            
+            guard matchesContentType else { continue }
+            
+            // Check if photo matches the filter
+            let matchesFilter: Bool
+            switch selectedFilter {
+            case .random:
+                matchesFilter = true // All photos match random filter
+            case .onThisDay:
+                guard let creationDate = asset.creationDate else { continue }
+                let today = Date()
+                matchesFilter = creationDate.day == today.day && 
+                               creationDate.month == today.month && 
+                               creationDate.year != today.year
+            case .screenshots:
+                matchesFilter = asset.mediaSubtypes.contains(.photoScreenshot)
+            case .year(let year):
+                matchesFilter = asset.creationDate?.year == year
+            }
+            
+            // Count all photos that match the filter (including processed ones)
+            if matchesFilter {
+                count += 1
+            }
+        }
+        return count
     }
     
     private func calculateStorageForPhotos(_ assets: [PHAsset]) -> String {
@@ -2351,6 +3543,10 @@ struct ContentView: View {
         currentPhotoLocation = nil
         dragOffset = .zero
         swipedPhotos.removeAll()
+        UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
+        if showingReviewScreen {
+            print("🔍 Debug: handleFilterChange() - setting showingReviewScreen = false")
+        }
         showingReviewScreen = false
         showingContinueScreen = false
         showingCheckpointScreen = false
@@ -2360,6 +3556,9 @@ struct ContentView: View {
         
         // Filter photos with new selection
         photos = filterPhotos(allPhotos)
+        
+        // Check if current filter is completed
+        isCategoryCompleted = isCurrentFilterCompleted()
         
         // Save persistence data (including the new filter selection)
         savePersistedData()
@@ -2382,40 +3581,20 @@ struct ContentView: View {
         case .trial, .active:
             // Full access for trial and active subscribers
             showingSubscriptionStatus = false
-            showingPersistentUpgrade = false // Ensure upgrade screen is dismissed
         }
     }
     
     private func showAdModal() {
+        // Save swiped photos before showing ad to prevent loss
+        saveSwipedPhotos()
         showingAdModal = true
-    }
-    
-    private func dismissAdModal() {
-        showingAdModal = false
-        purchaseManager.resetAdCounter()
-        nextPhoto()
     }
     
     private func showRewardedAd() {
         showingRewardedAd = true
     }
     
-    private func dismissRewardedAd() {
-        showingRewardedAd = false
-        // Grant 50 additional swipes
-        purchaseManager.grantRewardedSwipes(50)
-    }
-    
-    private func checkAndShowPersistentUpgrade() {
-        // Show persistent upgrade screen for non-subscribers and expired users
-        // But only if they haven't reached their daily limit (which shows a different screen)
-        // And only if they're not already a subscriber
-        if (purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired) && 
-           purchaseManager.canSwipe && 
-           !showingPersistentUpgrade {
-            showingPersistentUpgrade = true
-        }
-    }
+
     
     private func loadPersistedData() {
         // Load processed photo IDs
@@ -2437,6 +3616,23 @@ struct ContentView: View {
            let savedFilter = try? JSONDecoder().decode(PhotoFilter.self, from: savedFilterData) {
             selectedFilter = savedFilter
         }
+        
+        // Load selected content type
+        if let savedContentTypeData = UserDefaults.standard.data(forKey: selectedContentTypeKey),
+           let savedContentType = try? JSONDecoder().decode(ContentType.self, from: savedContentTypeData) {
+            selectedContentType = savedContentType
+        }
+        
+        // Load total photos deleted
+        totalPhotosDeleted = UserDefaults.standard.integer(forKey: totalPhotosDeletedKey)
+        
+        // Load stats data
+        totalStorageSaved = UserDefaults.standard.double(forKey: totalStorageSavedKey)
+        if let savedSwipeDays = UserDefaults.standard.array(forKey: swipeDaysKey) as? [String] {
+            swipeDays = Set(savedSwipeDays)
+        }
+        
+        print("📊 Debug: Loaded stats - totalPhotosDeleted: \(totalPhotosDeleted), totalStorageSaved: \(totalStorageSaved) MB, swipeDays: \(swipeDays.count) days")
     }
     
     private func savePersistedData() {
@@ -2455,6 +3651,20 @@ struct ContentView: View {
         if let filterData = try? JSONEncoder().encode(selectedFilter) {
             UserDefaults.standard.set(filterData, forKey: selectedFilterKey)
         }
+        
+        // Save selected content type
+        if let contentTypeData = try? JSONEncoder().encode(selectedContentType) {
+            UserDefaults.standard.set(contentTypeData, forKey: selectedContentTypeKey)
+        }
+        
+        // Save total photos deleted
+        UserDefaults.standard.set(totalPhotosDeleted, forKey: totalPhotosDeletedKey)
+        
+        // Save stats data
+        UserDefaults.standard.set(totalStorageSaved, forKey: totalStorageSavedKey)
+        UserDefaults.standard.set(Array(swipeDays), forKey: swipeDaysKey)
+        
+        print("📊 Debug: Saved stats - totalPhotosDeleted: \(totalPhotosDeleted), totalStorageSaved: \(totalStorageSaved) MB, swipeDays: \(swipeDays.count) days")
     }
     
     private func resetProgress() {
@@ -2462,11 +3672,15 @@ struct ContentView: View {
         UserDefaults.standard.removeObject(forKey: processedPhotoIdsKey)
         UserDefaults.standard.removeObject(forKey: totalProcessedKey)
         UserDefaults.standard.removeObject(forKey: filterProcessedCountsKey)
+        UserDefaults.standard.removeObject(forKey: selectedFilterKey)
+        // Note: Don't reset selectedContentTypeKey - keep user's content preference
         
         // Reset state
         processedPhotoIds.removeAll()
         totalProcessed = 0
         filterProcessedCounts.removeAll()
+        isCategoryCompleted = false
+        // Note: Don't reset totalPhotosDeleted - achievements should persist
         
         // Reload photos to reflect the reset
         refreshPhotos()
@@ -2557,12 +3771,109 @@ struct ContentView: View {
     
     private func shareCurrentPhoto() {
         if let image = currentImage {
-            imageToShare = image
+            print("Sharing image with size: \(image.size)")
+            itemToShare = image
             showingShareSheet = true
-        } else if currentVideoPlayer != nil {
-            // For videos, we could export a frame or share the video URL
-            // For now, we'll just show a message that video sharing isn't implemented
-            print("Video sharing not implemented yet")
+        } else if let asset = currentAsset, asset.mediaType == .video {
+            // For videos, we need to export the video file
+            shareVideo(asset: asset)
+        } else {
+            print("No image or video available to share")
+        }
+    }
+    
+    private func shareVideo(asset: PHAsset) {
+        // Try to get the original video file URL directly (most efficient)
+        let options = PHVideoRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        
+        // First try to get the file URL directly
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+            DispatchQueue.main.async {
+                if let avAsset = avAsset as? AVURLAsset {
+                    // We have direct access to the original file URL - share it directly!
+                    self.itemToShare = avAsset.url
+                    self.showingShareSheet = true
+                } else if let avAsset = avAsset {
+                    // Fallback to export method if direct URL access isn't available
+                    self.exportVideoToFile(avAsset: avAsset)
+                } else {
+                    print("Failed to load video for sharing")
+                }
+            }
+        }
+    }
+    
+    private func exportVideoForSharing(asset: PHAsset) {
+        let options = PHVideoRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+            DispatchQueue.main.async {
+                if let avAsset = avAsset {
+                    // Export the video to a temporary file for sharing
+                    self.exportVideoToFile(avAsset: avAsset)
+                } else {
+                    print("Failed to load video for sharing")
+                }
+            }
+        }
+    }
+    
+    private func exportVideoToFile(avAsset: AVAsset) {
+        // Create a temporary file URL
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let tempVideoURL = documentsPath.appendingPathComponent("temp_video_\(UUID().uuidString).mov")
+        
+        // Export the video
+        guard let exportSession = AVAssetExportSession(asset: avAsset, presetName: AVAssetExportPresetHighestQuality) else {
+            print("Failed to create export session")
+            return
+        }
+        
+        exportSession.outputURL = tempVideoURL
+        exportSession.outputFileType = .mov
+        exportSession.shouldOptimizeForNetworkUse = true
+        
+        exportSession.exportAsynchronously {
+            DispatchQueue.main.async {
+                switch exportSession.status {
+                case .completed:
+                    // Share the exported video file
+                    self.itemToShare = tempVideoURL
+                    self.showingShareSheet = true
+                    
+                    // Clean up the temporary file after sharing
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        self.cleanupTempVideoFile(url: tempVideoURL)
+                    }
+                case .failed:
+                    print("Video export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")")
+                    // Clean up failed export
+                    self.cleanupTempVideoFile(url: tempVideoURL)
+                case .cancelled:
+                    print("Video export cancelled")
+                    // Clean up cancelled export
+                    self.cleanupTempVideoFile(url: tempVideoURL)
+                default:
+                    print("Video export status: \(exportSession.status.rawValue)")
+                    // Clean up on any other status
+                    self.cleanupTempVideoFile(url: tempVideoURL)
+                }
+            }
+        }
+    }
+    
+    private func cleanupTempVideoFile(url: URL) {
+        do {
+            try FileManager.default.removeItem(at: url)
+            print("Cleaned up temporary video file: \(url.lastPathComponent)")
+        } catch {
+            print("Failed to clean up temporary video file: \(error.localizedDescription)")
         }
     }
     
@@ -2580,6 +3891,7 @@ struct ContentView: View {
         
         // Clear the swipedPhotos array
         swipedPhotos.removeAll()
+        UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
         
         // Check if we're done with all photos
         let nextBatchStartIndex = (batchIndex + 1) * batchSize
@@ -2623,6 +3935,47 @@ struct ContentView: View {
     }
     
     // Note: Tutorial overlay moved to Components/TutorialOverlay.swift
+    
+    // Save swipedPhotos to UserDefaults
+    private func saveSwipedPhotos() {
+        print("🔍 Debug: saveSwipedPhotos() - Saving \(swipedPhotos.count) photos")
+        let persistable = swipedPhotos.map { SwipedPhotoPersisted(assetLocalIdentifier: $0.asset.localIdentifier, action: $0.action) }
+        if let data = try? JSONEncoder().encode(persistable) {
+            UserDefaults.standard.set(data, forKey: swipedPhotosKey)
+            print("🔍 Debug: saveSwipedPhotos() - Successfully saved to UserDefaults")
+        } else {
+            print("🔍 Debug: saveSwipedPhotos() - Failed to encode data")
+        }
+    }
+    
+    // Restore swipedPhotos from UserDefaults
+    private func restoreSwipedPhotos() {
+        print("🔍 Debug: restoreSwipedPhotos() - START")
+        print("🔍 Debug: restoreSwipedPhotos() - Current swipedPhotos.count = \(swipedPhotos.count)")
+        
+        // Only restore if we're not in the middle of a review session
+        if showingReviewScreen {
+            print("🔍 Debug: restoreSwipedPhotos() - Review screen is showing, skipping restore to preserve current state")
+            return
+        }
+        
+        guard let data = UserDefaults.standard.data(forKey: swipedPhotosKey),
+              let persisted = try? JSONDecoder().decode([SwipedPhotoPersisted].self, from: data),
+              !persisted.isEmpty else {
+            print("🔍 Debug: restoreSwipedPhotos() - No data found, keeping current swipedPhotos")
+            return
+        }
+        print("🔍 Debug: restoreSwipedPhotos() - Found \(persisted.count) persisted photos")
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: persisted.map { $0.assetLocalIdentifier }, options: nil)
+        var restored: [SwipedPhoto] = []
+        for (i, p) in persisted.enumerated() {
+            if i < assets.count {
+                restored.append(SwipedPhoto(asset: assets[i], action: p.action))
+            }
+        }
+        swipedPhotos = restored
+        print("🔍 Debug: restoreSwipedPhotos() - Restored \(restored.count) photos")
+    }
 }
 
 // MARK: - Supporting Types and Views
@@ -2640,6 +3993,15 @@ struct ContentView: View {
 // MARK: - Ad Modal View
 struct AdModalView: View {
     let onDismiss: () -> Void
+    @State private var showingAd = false
+    @State private var isLoadingAd = false
+    @State private var isAdReady = false
+    @State private var adError: String?
+    
+    // Use a computed property to access AdMobManager without observing it
+    private var adMobManager: AdMobManager {
+        AdMobManager.shared
+    }
     
     var body: some View {
         ZStack {
@@ -2651,46 +4013,137 @@ struct AdModalView: View {
                     .font(.system(size: 24, weight: .bold))
                     .foregroundColor(.white)
                 
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
+                if isLoadingAd {
+                    VStack(spacing: 15) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.5)
+                        
+                        Text("Loading Advertisement...")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
                     .frame(height: 200)
-                    .overlay(
-                        VStack(spacing: 10) {
-                            Image(systemName: "play.circle.fill")
-                                .font(.system(size: 48))
+                } else if isAdReady {
+                    VStack(spacing: 15) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 48))
+                            .foregroundColor(.green)
+                            .onTapGesture {
+                                showAd()
+                            }
+                        
+                        Text("Ad Ready")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    .frame(height: 200)
+                } else {
+                    VStack(spacing: 15) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 48))
+                            .foregroundColor(.orange)
+                        
+                        Text("Ad Not Available")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                        
+                        if let error = adError {
+                            Text(error)
+                                .font(.system(size: 12))
                                 .foregroundColor(.white.opacity(0.6))
-                            
-                            Text("Placeholder Ad")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundColor(.white.opacity(0.8))
-                            
-                            Text("This is where an ad would appear")
-                                .font(.system(size: 14))
-                                .foregroundColor(.white.opacity(0.6))
+                                .multilineTextAlignment(.center)
                         }
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .frame(height: 200)
+                }
                 
-                Button(action: onDismiss) {
-                    Text("Continue")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(Color.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                if isAdReady {
+                    Button(action: showAd) {
+                        Text("Watch Ad")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.green)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                } else {
+                    Button(action: onDismiss) {
+                        Text("Continue")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.blue)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                
+                if !isAdReady {
+                    Button(action: retryLoadAd) {
+                        Text("Retry")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
                 }
             }
             .padding(40)
         }
+        .onAppear {
+            updateAdStatus()
+            if !isAdReady {
+                adMobManager.loadInterstitialAd()
+                isLoadingAd = true
+            }
+        }
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            updateAdStatus()
+        }
+    }
+    
+    private func showAd() {
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first,
+              let rootViewController = window.rootViewController else {
+            onDismiss()
+            return
+        }
+        
+        adMobManager.showInterstitialAd(from: rootViewController) {
+            onDismiss()
+        }
+    }
+    
+    private func retryLoadAd() {
+        adMobManager.loadInterstitialAd()
+        isLoadingAd = true
+        adError = nil
+    }
+    
+    private func updateAdStatus() {
+        isLoadingAd = adMobManager.isLoadingAd
+        isAdReady = adMobManager.isInterstitialAdReady
+        adError = adMobManager.adError
     }
 }
 
 // MARK: - Rewarded Ad Modal View
 struct RewardedAdModalView: View {
     let onDismiss: () -> Void
-    @State private var adProgress: Double = 0.0
-    @State private var isAdComplete = false
+    @State private var rewardEarned = false
+    @State private var isLoadingAd = false
+    @State private var isAdReady = false
+    @State private var adError: String?
+    
+    // Use a computed property to access AdMobManager without observing it
+    private var adMobManager: AdMobManager {
+        AdMobManager.shared
+    }
     
     var body: some View {
         ZStack {
@@ -2703,56 +4156,79 @@ struct RewardedAdModalView: View {
                     .foregroundColor(.white)
                 
                 VStack(spacing: 20) {
-                    Rectangle()
-                        .fill(Color.gray.opacity(0.3))
+                    if isLoadingAd {
+                        VStack(spacing: 20) {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(1.5)
+                            
+                            Text("Loading Rewarded Ad...")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
                         .frame(height: 250)
-                        .overlay(
-                            VStack(spacing: 15) {
-                                if !isAdComplete {
-                                    Image(systemName: "play.circle.fill")
-                                        .font(.system(size: 64))
-                                        .foregroundColor(.green)
-                                    
-                                    Text("Rewarded Video Ad")
-                                        .font(.system(size: 20, weight: .medium))
-                                        .foregroundColor(.white.opacity(0.8))
-                                    
-                                    Text("Watch this video to earn 50 additional swipes")
-                                        .font(.system(size: 16))
-                                        .foregroundColor(.white.opacity(0.6))
-                                        .multilineTextAlignment(.center)
-                                    
-                                    ProgressView(value: adProgress)
-                                        .progressViewStyle(LinearProgressViewStyle(tint: .green))
-                                        .frame(width: 200)
-                                    
-                                    Text("\(Int(adProgress * 100))% Complete")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(.white.opacity(0.7))
-                                } else {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 64))
-                                        .foregroundColor(.green)
-                                    
-                                    Text("Ad Complete!")
-                                        .font(.system(size: 20, weight: .medium))
-                                        .foregroundColor(.white.opacity(0.8))
-                                    
-                                    Text("You've earned 50 additional swipes!")
-                                        .font(.system(size: 16))
-                                        .foregroundColor(.white.opacity(0.6))
-                                }
+                    } else if isAdReady {
+                        VStack(spacing: 20) {
+                            if !rewardEarned {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 64))
+                                    .foregroundColor(.green)
+                                
+                                Text("Rewarded Video Ad")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                
+                                Text("Watch this video to earn 50 additional swipes")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.6))
+                                    .multilineTextAlignment(.center)
+                                
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            } else {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 64))
+                                    .foregroundColor(.green)
+                                
+                                Text("Ad Complete!")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                
+                                Text("You've earned 50 additional swipes!")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.6))
                             }
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        }
+                        .frame(height: 250)
+                    } else {
+                        VStack(spacing: 20) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 64))
+                                .foregroundColor(.orange)
+                            
+                            Text("Ad Not Available")
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                            
+                            if let error = adError {
+                                Text(error)
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white.opacity(0.6))
+                                    .multilineTextAlignment(.center)
+                            }
+                        }
+                        .frame(height: 250)
+                    }
                 }
+                .clipShape(RoundedRectangle(cornerRadius: 16))
                 
-                if !isAdComplete {
+                if isAdReady && !rewardEarned {
                     Text("Please watch the entire ad to receive your reward")
                         .font(.system(size: 14))
                         .foregroundColor(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
-                } else {
+                }
+                
+                if rewardEarned {
                     Button(action: onDismiss) {
                         Text("Claim 50 Swipes")
                             .font(.system(size: 18, weight: .bold))
@@ -2762,133 +4238,82 @@ struct RewardedAdModalView: View {
                             .background(Color.green)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
+                } else if isAdReady {
+                    Button(action: showRewardedAd) {
+                        Text("Watch Ad")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.green)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                } else {
+                    Button(action: onDismiss) {
+                        Text("Continue")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.blue)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                
+                if !isAdReady {
+                    Button(action: retryLoadRewardedAd) {
+                        Text("Retry")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
                 }
             }
             .padding(40)
         }
         .onAppear {
-            startAdSimulation()
+            updateAdStatus()
+            if !isAdReady {
+                adMobManager.loadRewardedAd()
+                isLoadingAd = true
+            }
+        }
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            updateAdStatus()
         }
     }
     
-    private func startAdSimulation() {
-        // Simulate ad progress
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-            if adProgress < 1.0 {
-                adProgress += 0.02 // Complete in ~5 seconds
-            } else {
-                timer.invalidate()
-                isAdComplete = true
+    private func showRewardedAd() {
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first,
+              let rootViewController = window.rootViewController else {
+            return
+        }
+        
+        adMobManager.showRewardedAd(from: rootViewController) { earned in
+            if earned {
+                rewardEarned = true
             }
         }
+    }
+    
+    private func retryLoadRewardedAd() {
+        adMobManager.loadRewardedAd()
+        isLoadingAd = true
+        adError = nil
+    }
+    
+    private func updateAdStatus() {
+        isLoadingAd = adMobManager.isLoadingAd
+        isAdReady = adMobManager.isRewardedAdReady
+        adError = adMobManager.adError
     }
 }
 
-// MARK: - Persistent Upgrade View
-struct PersistentUpgradeView: View {
-    let onDismiss: () -> Void
-    @StateObject private var purchaseManager = PurchaseManager.shared
-    
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.9)
-                .ignoresSafeArea()
-            
-            VStack(spacing: 30) {
-                HStack {
-                    Spacer()
-                    
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
-                    }
-                }
-                .padding(.top, 20)
-                
-                VStack(spacing: 20) {
-                    Text("Try CleanSwipe Premium")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                    
-                    Text("You've used your free swipes for today!")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                }
-                
-                VStack(spacing: 16) {
-                    UpgradeFeatureRow(icon: "infinity", title: "Unlimited swipes", description: "No daily limits")
-                    UpgradeFeatureRow(icon: "rectangle.slash", title: "No ads", description: "Clean, uninterrupted experience")
-                    UpgradeFeatureRow(icon: "sparkles", title: "Premium features", description: "Advanced filtering & sorting")
-                }
-                .padding(.horizontal, 20)
-                
-                VStack(spacing: 12) {
-                    Button(action: {
-                        Task {
-                            await purchaseManager.startTrialPurchase()
-                            onDismiss()
-                        }
-                    }) {
-                        HStack {
-                            if purchaseManager.purchaseState == .purchasing {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .scaleEffect(0.8)
-                            }
-                            
-                            Text(purchaseManager.purchaseState == .purchasing ? "Starting Trial..." : "Start 3-Day Free Trial")
-                                .font(.system(size: 18, weight: .bold))
-                                .foregroundColor(.white)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(Color.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .disabled(purchaseManager.purchaseState == .purchasing)
-                    
-                    Text("Then £1/week • Cancel anytime")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.6))
-                }
-                
-                Spacer()
-            }
-            .padding(.horizontal, 30)
-        }
-    }
-}
 
-// MARK: - Upgrade Feature Row
-private struct UpgradeFeatureRow: View {
-    let icon: String
-    let title: String
-    let description: String
-    
-    var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.system(size: 20))
-                .foregroundColor(.blue)
-                .frame(width: 24, height: 24)
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.white)
-                
-                Text(description)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.7))
-            }
-            
-            Spacer()
-        }
-    }
-}
 
 // MARK: - DebugButton Component
 struct DebugButton: View {
@@ -2914,6 +4339,20 @@ struct ShareSheet: UIViewControllerRepresentable {
     
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        
+        // Configure the activity view controller for better presentation
+        controller.excludedActivityTypes = [
+            .assignToContact,
+            .addToReadingList,
+            .openInIBooks,
+            .markupAsPDF
+        ]
+        
+        // Set completion handler to dismiss the sheet
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            // The sheet will be dismissed automatically
+        }
+        
         return controller
     }
     
@@ -2995,8 +4434,9 @@ extension ContentView {
     
     func getVideoOptions(for preference: StoragePreference) -> PHVideoRequestOptions {
         let options = PHVideoRequestOptions()
-        options.isNetworkAccessAllowed = preference.allowsNetworkAccess
+        options.isNetworkAccessAllowed = true // Always allow network access for videos to ensure they load
         options.deliveryMode = preference.videoDeliveryMode
+        options.version = .original
         return options
     }
     
@@ -3027,6 +4467,18 @@ extension ContentView {
         }
         
         return true // Assume OK if we can't check
+    }
+}
+
+// MARK: - Conditional View Modifier
+extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }
 

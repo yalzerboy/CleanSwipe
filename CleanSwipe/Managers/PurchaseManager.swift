@@ -2,10 +2,10 @@ import Foundation
 import SwiftUI
 import Photos
 import UserNotifications
-// import RevenueCat  // Will be added when RevenueCat package is integrated
+import RevenueCat
 
 @MainActor
-class PurchaseManager: ObservableObject {
+class PurchaseManager: NSObject, ObservableObject {
     
     // MARK: - Published Properties
     @Published var subscriptionStatus: SubscriptionStatus = .notSubscribed
@@ -16,26 +16,26 @@ class PurchaseManager: ObservableObject {
     // MARK: - Swipe Tracking
     @Published var dailySwipeCount: Int = 0
     @Published var rewardedSwipesRemaining: Int = 0
+    @Published var filterSwipeCounts: [String: Int] = [:]
     @Published var canSwipe: Bool = true
     @Published var swipesUntilAd: Int = 5
     
     // MARK: - Constants
     private let weeklyProductID = "cleanswipe_weekly_trial"
-    private let revenueCatAPIKey = "YOUR_REVENUECAT_API_KEY" // TODO: Replace with actual API key
+    private let revenueCatAPIKey = "appl_riEvQeCWprBbaPfbmrTRESCHaoq"
     private let maxDailySwipes = 10
     private let swipesBetweenAds = 5
     
     // MARK: - Singleton
     static let shared = PurchaseManager()
     
-    private init() {
+    private override init() {
+        super.init()
         configure()
     }
     
     // MARK: - Configuration
     private func configure() {
-        // TODO: Configure RevenueCat when package is added
-        /*
         Purchases.logLevel = .debug
         Purchases.configure(withAPIKey: revenueCatAPIKey)
         
@@ -43,19 +43,16 @@ class PurchaseManager: ObservableObject {
         Purchases.shared.delegate = self
         
         // Check current subscription status
-        checkSubscriptionStatus()
+        Task {
+            await checkSubscriptionStatus()
+        }
         
         // Load available products
         loadProducts()
-        */
         
-        // For now, simulate configuration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            self.isConfigured = true
-            self.simulateProducts() // Remove this when RevenueCat is integrated
-            self.simulateSubscriptionStatus()
-            self.checkDailySwipeLimit()
-        }
+        // Mark as configured
+        isConfigured = true
+        checkDailySwipeLimit()
     }
     
     // MARK: - Public Methods
@@ -65,12 +62,9 @@ class PurchaseManager: ObservableObject {
         purchaseState = .purchasing
         
         do {
-            // TODO: Implement actual RevenueCat purchase when package is added
-            /*
             let offerings = try await Purchases.shared.offerings()
             
-            guard let weeklyOffering = offerings.current?.weekly,
-                  let weeklyPackage = weeklyOffering.package else {
+            guard let weeklyPackage = offerings.current?.availablePackages.first(where: { $0.identifier == "cleanswipe_weekly_trial" }) else {
                 throw PurchaseError.unknown("Weekly subscription not available")
             }
             
@@ -82,10 +76,6 @@ class PurchaseManager: ObservableObject {
             } else {
                 purchaseState = .failed(PurchaseError.userCancelled)
             }
-            */
-            
-            // Simulate purchase for now
-            try await simulatePurchase()
             
         } catch {
             purchaseState = .failed(error)
@@ -98,14 +88,9 @@ class PurchaseManager: ObservableObject {
         purchaseState = .restoring
         
         do {
-            // TODO: Implement actual RevenueCat restore when package is added
-            /*
             _ = try await Purchases.shared.restorePurchases()
             await checkSubscriptionStatus()
-            */
-            
-            // Simulate restore for now
-            try await simulateRestore()
+            purchaseState = .success
             
         } catch {
             purchaseState = .failed(error)
@@ -116,30 +101,22 @@ class PurchaseManager: ObservableObject {
         guard isConfigured else { return }
         
         do {
-            // TODO: Implement actual RevenueCat status check when package is added
-            /*
             let customerInfo = try await Purchases.shared.customerInfo()
             
-            if customerInfo.entitlements.active.isEmpty {
-                subscriptionStatus = .notSubscribed
-            } else if let entitlement = customerInfo.entitlements.active.first?.value {
-                if entitlement.isActive {
-                    if entitlement.willRenew {
-                        subscriptionStatus = entitlement.periodType == .trial ? .trial : .active
+            // Check for specific entitlement "Premium" (this should match your RevenueCat entitlement)
+            if let proEntitlement = customerInfo.entitlements["Premium"] {
+                if proEntitlement.isActive {
+                    if proEntitlement.willRenew {
+                        subscriptionStatus = proEntitlement.periodType == .trial ? .trial : .active
                     } else {
                         subscriptionStatus = .cancelled
                     }
                 } else {
                     subscriptionStatus = .expired
                 }
+            } else {
+                subscriptionStatus = .notSubscribed
             }
-            */
-            
-            // Simulate status check for now
-            if !isConfigured {
-                throw PurchaseError.unknown("Purchase manager not configured")
-            }
-            simulateSubscriptionStatus()
             
         } catch {
             print("Error checking subscription status: \(error)")
@@ -148,14 +125,11 @@ class PurchaseManager: ObservableObject {
     
     // MARK: - Private Methods
     private func loadProducts() {
-        // TODO: Load products from RevenueCat when package is added
-        /*
         Task {
             do {
                 let offerings = try await Purchases.shared.offerings()
                 
-                if let weeklyOffering = offerings.current?.weekly,
-                   let weeklyPackage = weeklyOffering.package {
+                if let weeklyPackage = offerings.current?.availablePackages.first(where: { $0.identifier == "cleanswipe_weekly_trial" }) {
                     
                     let product = SubscriptionProduct(
                         identifier: weeklyPackage.storeProduct.productIdentifier,
@@ -173,84 +147,29 @@ class PurchaseManager: ObservableObject {
                 print("Error loading products: \(error)")
             }
         }
-        */
     }
     
-    // MARK: - Simulation Methods (Remove when RevenueCat is integrated)
-    private func simulateProducts() {
-        let weeklyProduct = SubscriptionProduct(
-            identifier: weeklyProductID,
-            title: "CleanSwipe Premium",
-            description: "Unlimited swipes, all features unlocked",
-            price: "£1.00/week",
-            trialPeriod: "3 days free"
-        )
-        
-        availableProducts = [weeklyProduct]
-    }
-    
-    private func simulatePurchase() async throws {
-        // Simulate network delay
-        try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
-        
-        // Simulate random failure (10% chance)
-        if Int.random(in: 1...10) == 1 {
-            throw PurchaseError.networkError
-        }
-        
-        subscriptionStatus = .trial
-        purchaseState = .success
-        
-        // Store trial start date
-        UserDefaults.standard.set(Date(), forKey: "trialStartDate")
-    }
-    
-    private func simulateRestore() async throws {
-        // Simulate network delay
-        try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds
-        
-        // Check if trial was previously started
-        if UserDefaults.standard.object(forKey: "trialStartDate") != nil {
-            subscriptionStatus = .trial
-        } else {
-            subscriptionStatus = .notSubscribed
-        }
-        
-        purchaseState = .success
-    }
-    
-    private func simulateSubscriptionStatus() {
-        // Check if trial was previously started
-        if let trialStartDate = UserDefaults.standard.object(forKey: "trialStartDate") as? Date {
-            let daysSinceStart = Calendar.current.dateComponents([.day], from: trialStartDate, to: Date()).day ?? 0
-            
-            if daysSinceStart < 3 {
-                subscriptionStatus = .trial
-            } else {
-                subscriptionStatus = .expired
-            }
-        } else {
-            subscriptionStatus = .notSubscribed
-        }
-    }
+
     
     // MARK: - Swipe Tracking
     
     func checkDailySwipeLimit() {
         loadDailySwipeCount()
         loadRewardedSwipes()
+        loadFilterSwipeCounts()
         updateCanSwipeStatus()
     }
     
-    func recordSwipe() {
+    func recordSwipe(for filter: PhotoFilter) {
         // Use rewarded swipes first, then daily swipes
         if rewardedSwipesRemaining > 0 {
             rewardedSwipesRemaining -= 1
             saveRewardedSwipes()
         } else {
-            // Increment daily swipe count
-            dailySwipeCount += 1
-            saveDailySwipeCount()
+            // Increment filter-specific swipe count
+            let filterKey = filterKey(for: filter)
+            filterSwipeCounts[filterKey, default: 0] += 1
+            saveFilterSwipeCounts()
         }
         
         // Update ad counter
@@ -262,7 +181,9 @@ class PurchaseManager: ObservableObject {
         // Update swipe availability
         updateCanSwipeStatus()
         
-        print("📱 Swipe recorded: \(dailySwipeCount)/\(maxDailySwipes), Rewarded: \(rewardedSwipesRemaining), Next ad in: \(swipesUntilAd)")
+        let filterKey = filterKey(for: filter)
+        let currentFilterCount = filterSwipeCounts[filterKey, default: 0]
+        print("📱 Swipe recorded for \(filterKey): \(currentFilterCount)/\(maxDailySwipes), Rewarded: \(rewardedSwipesRemaining), Next ad in: \(swipesUntilAd)")
     }
     
     func grantRewardedSwipes(_ count: Int) {
@@ -292,7 +213,18 @@ class PurchaseManager: ObservableObject {
         case .trial, .active:
             canSwipe = true
         case .notSubscribed, .expired, .cancelled:
-            canSwipe = rewardedSwipesRemaining > 0 || dailySwipeCount < maxDailySwipes
+            canSwipe = rewardedSwipesRemaining > 0
+        }
+    }
+    
+    func canSwipeForFilter(_ filter: PhotoFilter) -> Bool {
+        switch subscriptionStatus {
+        case .trial, .active:
+            return true
+        case .notSubscribed, .expired, .cancelled:
+            let filterKey = filterKey(for: filter)
+            let filterCount = filterSwipeCounts[filterKey, default: 0]
+            return rewardedSwipesRemaining > 0 || filterCount < maxDailySwipes
         }
     }
     
@@ -338,6 +270,45 @@ class PurchaseManager: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+    
+    private func filterKey(for filter: PhotoFilter) -> String {
+        switch filter {
+        case .random:
+            return "random"
+        case .onThisDay:
+            return "onThisDay"
+        case .screenshots:
+            return "screenshots"
+        case .year(let year):
+            return "year_\(year)"
+        }
+    }
+    
+    private func loadFilterSwipeCounts() {
+        let today = dateString(from: Date())
+        let storedDate = UserDefaults.standard.string(forKey: "lastFilterSwipeDate") ?? ""
+        
+        if today == storedDate {
+            if let data = UserDefaults.standard.data(forKey: "filterSwipeCounts"),
+               let counts = try? JSONDecoder().decode([String: Int].self, from: data) {
+                filterSwipeCounts = counts
+            }
+        } else {
+            // New day, reset all filter counts
+            filterSwipeCounts = [:]
+            UserDefaults.standard.set(today, forKey: "lastFilterSwipeDate")
+            UserDefaults.standard.removeObject(forKey: "filterSwipeCounts")
+        }
+    }
+    
+    private func saveFilterSwipeCounts() {
+        let today = dateString(from: Date())
+        UserDefaults.standard.set(today, forKey: "lastFilterSwipeDate")
+        
+        if let data = try? JSONEncoder().encode(filterSwipeCounts) {
+            UserDefaults.standard.set(data, forKey: "filterSwipeCounts")
+        }
     }
     
     // MARK: - Debug Controls (Remove in production)
@@ -405,6 +376,10 @@ class PurchaseManager: ObservableObject {
         print("  Rewarded swipes remaining: \(rewardedSwipesRemaining)")
         print("  Can swipe: \(canSwipe)")
         print("  Swipes until ad: \(swipesUntilAd)")
+        print("  Filter swipe counts:")
+        for (filterKey, count) in filterSwipeCounts {
+            print("    \(filterKey): \(count)/\(maxDailySwipes)")
+        }
         
         // Print permission status
         Task {
@@ -437,6 +412,7 @@ class PurchaseManager: ObservableObject {
     func debugResetDailySwipes() {
         dailySwipeCount = 0
         rewardedSwipesRemaining = 0
+        filterSwipeCounts = [:]
         UserDefaults.standard.set(0, forKey: "dailySwipeCount")
         UserDefaults.standard.set(0, forKey: "rewardedSwipesRemaining")
         updateCanSwipeStatus()
@@ -469,16 +445,14 @@ class PurchaseManager: ObservableObject {
     }
 }
 
-// MARK: - RevenueCat Delegate (Will be implemented when package is added)
-/*
-extension PurchaseManager: PurchasesDelegate {
-    func purchases(_ purchases: Purchases, receivedUpdated customerInfo: CustomerInfo) {
-        Task {
+// MARK: - RevenueCat Delegate
+extension PurchaseManager: @preconcurrency PurchasesDelegate {
+    nonisolated func purchases(_ purchases: Purchases, receivedUpdated customerInfo: CustomerInfo) {
+        Task { @MainActor in
             await checkSubscriptionStatus()
         }
     }
 }
-*/
 
 // MARK: - Extensions for Debug Output
 extension PHAuthorizationStatus {

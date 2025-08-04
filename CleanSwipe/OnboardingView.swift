@@ -1,5 +1,7 @@
 import SwiftUI
 import AVKit
+import RevenueCatUI
+import RevenueCat
 
 // MARK: - Splash Screen
 struct SplashView: View {
@@ -44,14 +46,14 @@ struct OnboardingFlowView: View {
             switch currentStep {
             case .welcome:
                 WelcomeView {
-                    currentStep = .howTo
-                }
-            case .howTo:
-                HowToView {
                     currentStep = .benefits
                 }
             case .benefits:
                 BenefitsView {
+                    currentStep = .howTo
+                }
+            case .howTo:
+                HowToView {
                     currentStep = .age
                 }
             case .age:
@@ -60,15 +62,11 @@ struct OnboardingFlowView: View {
                 }
             case .photoCount:
                 PhotoCountView(selectedCount: $photoCount) {
-                    if let _ = photoCount {
-                        currentStep = .cleaningFrequency
-                    }
+                    currentStep = .cleaningFrequency
                 }
             case .cleaningFrequency:
                 CleaningFrequencyView(selectedFrequency: $cleaningFrequency) {
-                    if let _ = cleaningFrequency {
-                        currentStep = .contentType
-                    }
+                    currentStep = .contentType
                 }
             case .contentType:
                 ContentTypeView(selectedType: $contentType) {
@@ -82,10 +80,6 @@ struct OnboardingFlowView: View {
                 }
             case .freeTrialIntro:
                 FreeTrialIntroView {
-                    currentStep = .trialDetails
-                }
-            case .trialDetails:
-                TrialDetailsView {
                     currentStep = .finalContinue
                 }
             case .finalContinue:
@@ -102,195 +96,452 @@ struct OnboardingFlowView: View {
 // MARK: - Onboarding Steps
 // Note: Enums moved to Models/ContentType.swift
 
-// MARK: - Welcome View (Current video onboarding)
+// MARK: - Welcome View (Animated text onboarding)
 struct WelcomeView: View {
     let onContinue: () -> Void
-    @State private var player: AVPlayer?
+    @State private var animatedText = ""
+    @State private var currentIndex = 0
+    @State private var isAnimating = false
+    
+    private let fullText = "With just a few mins a day, swipe your way to a clean, organised photo library"
+    private let animationSpeed: TimeInterval = 0.03
     
     var body: some View {
         ZStack {
-            // Video Player
-            if let player = player {
-                VideoPlayer(player: player)
+            // Baby blue background
+            Color(red: 0.7, green: 0.85, blue: 1.0)
                     .ignoresSafeArea()
-                    .onAppear {
-                        player.actionAtItemEnd = .none
-                        player.play()
-                    }
-                    .onDisappear {
-                        player.pause()
-                    }
-                    .overlay {
-                        LinearGradient(
-                            gradient: Gradient(colors: [.black.opacity(0.2), .black.opacity(0.4)]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-            }
             
             VStack(spacing: 30) {
                 Spacer()
                 
-                Text("Welcome to CleanSwipe")
-                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                // Static CleanSwipe text in blocky font
+                Text("CleanSwipe")
+                    .font(.system(size: 48, weight: .black, design: .default))
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
                 
-                Text("Swipe right to keep, left to delete.\nOrganize your photos with simple gestures.")
+                Spacer()
+                
+                // Animated description text
+                Text(animatedText)
                     .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.9))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
+                    .onAppear {
+                        startTextAnimation()
+                    }
                 
                 Button(action: onContinue) {
-                    Text("Get Started")
+                    Text("Let's go")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 60)
                         .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.blue)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16)
-                                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                                )
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color(red: 0.9, green: 0.4, blue: 0.7), // Pink
+                                    Color(red: 0.4, green: 0.6, blue: 0.9)  // Blue
+                                ]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
                         )
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
                         .shadow(color: Color.black.opacity(0.2), radius: 10, x: 0, y: 5)
                 }
                 .padding(.horizontal, 40)
                 .padding(.bottom, 50)
+                .opacity(isAnimating ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.5).delay(2.5), value: isAnimating)
             }
         }
-        .onAppear {
-            setupPlayer()
         }
+    
+    private func startTextAnimation() {
+        isAnimating = true
+        animateText()
     }
     
-    private func setupPlayer() {
-        guard let url = Bundle.main.url(forResource: "onboarding_video", withExtension: "mp4") else {
+    private func animateText() {
+        guard currentIndex < fullText.count else {
             return
         }
         
-        let player = AVPlayer(url: url)
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: player.currentItem,
-            queue: .main
-        ) { _ in
-            player.seek(to: .zero)
-            player.play()
-        }
+        let index = fullText.index(fullText.startIndex, offsetBy: currentIndex)
+        animatedText += String(fullText[index])
+        currentIndex += 1
         
-        self.player = player
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationSpeed) {
+            animateText()
+        }
     }
 }
 
 // MARK: - How To View
 struct HowToView: View {
     let onContinue: () -> Void
+    @State private var animateLeft = false
+    @State private var animateRight = false
+    @State private var animateTitle = false
+    @State private var animateDescription = false
     
     var body: some View {
-        VStack(spacing: 40) {
-            VStack(spacing: 20) {
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
+            
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
                 Text("Quick How-To")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 36, weight: .black, design: .rounded))
                     .foregroundColor(.white)
-                
-                VStack(spacing: 30) {
-                    HStack(spacing: 20) {
-                        Image(systemName: "arrow.left")
-                            .font(.system(size: 24))
-                            .foregroundColor(.red)
-                        Text("Swipe left to delete")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white)
-                    }
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                     
-                    HStack(spacing: 20) {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 24))
-                            .foregroundColor(.green)
-                        Text("Swipe right to keep")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white)
-                    }
+                    Text("Master the art of photo organization")
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                        .opacity(animateTitle ? 1.0 : 0.7)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
-                .padding(.vertical, 30)
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Swipe instructions with animations
+                VStack(spacing: 40) {
+                    // Swipe Left to Delete
+                    SwipeInstructionCard(
+                        icon: "trash.circle.fill",
+                        title: "Swipe Left",
+                        subtitle: "to delete",
+                        color: .red,
+                        direction: .left,
+                        isAnimating: animateLeft
+                    )
+                    
+                    // Swipe Right to Keep
+                    SwipeInstructionCard(
+                        icon: "heart.circle.fill",
+                        title: "Swipe Right",
+                        subtitle: "to keep",
+                        color: .green,
+                        direction: .right,
+                        isAnimating: animateRight
+                    )
+                }
+                .padding(.top, 50)
+                .padding(.horizontal, 30)
+                
+                Spacer()
+                
+                // Description with fade-in animation
+                VStack(spacing: 16) {
+                    Text("✨ De-clutter your phone and relive memories with every swipe! ✨")
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 30)
+                        .opacity(animateDescription ? 1.0 : 0.0)
+                        .animation(.easeInOut(duration: 1.0).delay(0.5), value: animateDescription)
+                    
+                    // Batch processing info
+                    VStack(spacing: 8) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 20))
+                            .foregroundColor(.green)
+                            
+                            Text("Safe & Secure")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
             }
             
-            Text("De-clutter your phone in one clean swipe!")
-                .font(.system(size: 20, weight: .medium, design: .rounded))
+                        Text("Photos are processed in batches of 10. Review and confirm before any deletion. Everything can be undone!")
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            
-            Spacer()
-            
+                            .padding(.horizontal, 20)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.green.opacity(0.2))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.green.opacity(0.4), lineWidth: 1)
+                            )
+                    )
+                    .opacity(animateDescription ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 1.0).delay(0.8), value: animateDescription)
+                    
+                    // Animated sparkles
+                    HStack(spacing: 20) {
+                        ForEach(0..<3, id: \.self) { index in
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 16))
+                                .foregroundColor(.yellow)
+                                .opacity(animateDescription ? 1.0 : 0.0)
+                                .animation(.easeInOut(duration: 1.0).delay(1.2 + Double(index) * 0.2), value: animateDescription)
+                        }
+                    }
+                }
+                .padding(.bottom, 30)
+                
+                // Continue button with gradient and animation
             Button(action: onContinue) {
-                Text("Continue")
-                    .font(.system(size: 18, weight: .bold))
+                    HStack(spacing: 12) {
+                        Text("Let's Get Started!")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
+                        
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                    }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(height: 56)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.blue, Color.purple]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                    .scaleEffect(animateDescription ? 1.0 : 0.95)
+                    .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateDescription)
             }
             .padding(.horizontal, 40)
             .padding(.bottom, 50)
         }
-        .padding(.top, 80)
+        }
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateLeft = true
+            animateRight = true
+            animateDescription = true
+        }
+    }
+}
+
+// MARK: - Swipe Instruction Card
+struct SwipeInstructionCard: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let color: Color
+    let direction: SwipeDirection
+    let isAnimating: Bool
+    
+    @State private var cardOffset: CGFloat = 0
+    @State private var iconScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
+    
+    enum SwipeDirection {
+        case left, right
+    }
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            // Icon section
+            ZStack {
+                // Glow effect
+                Circle()
+                    .fill(color)
+                    .frame(width: 80, height: 80)
+                    .blur(radius: 20)
+                    .opacity(glowOpacity)
+                    .scaleEffect(iconScale)
+                
+                // Main icon
+                Image(systemName: icon)
+                    .font(.system(size: 40, weight: .bold))
+                    .foregroundColor(color)
+                    .scaleEffect(iconScale)
+                    .shadow(color: color.opacity(0.5), radius: 8, x: 0, y: 4)
+            }
+            .frame(width: 80, height: 80)
+            
+            // Text section
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                
+                Text(subtitle)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+            }
+            .padding(.leading, 24)
+            
+            Spacer()
+            
+            // Swipe arrow indicator
+            VStack(spacing: 8) {
+                Image(systemName: direction == .left ? "arrow.left" : "arrow.right")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(color)
+                    .offset(x: cardOffset)
+                    .opacity(isAnimating ? 1.0 : 0.5)
+                
+                Text(direction == .left ? "←" : "→")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(color.opacity(0.7))
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color.white.opacity(0.15))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(color.opacity(0.3), lineWidth: 2)
+                )
+        )
+        .shadow(color: color.opacity(0.2), radius: 10, x: 0, y: 5)
+        .onAppear {
+            // Start card animations
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                cardOffset = direction == .left ? -10 : 10
+                iconScale = 1.1
+                glowOpacity = 0.6
+            }
+        }
     }
 }
 
 // MARK: - Benefits View
 struct BenefitsView: View {
     let onContinue: () -> Void
+    @State private var animateTitle = false
+    @State private var animateIcon = false
+    @State private var animateDescription = false
+    @State private var animateButton = false
     
     var body: some View {
-        VStack(spacing: 40) {
-            VStack(spacing: 20) {
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
+            
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
                 Text("Enjoy the Free Space")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 36, weight: .black, design: .rounded))
                     .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 
                 Text("No more \"out of storage\"")
                     .font(.system(size: 20, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            }
-            
-            VStack(spacing: 20) {
+                        .opacity(animateTitle ? 1.0 : 0.7)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Animated icon section
+                VStack(spacing: 24) {
+                    ZStack {
+                        // Glow effect
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 120, height: 120)
+                            .blur(radius: 30)
+                            .opacity(animateIcon ? 0.6 : 0.0)
+                            .scaleEffect(animateIcon ? 1.2 : 1.0)
+                        
+                        // Main icon
                 Image(systemName: "icloud.and.arrow.up")
-                    .font(.system(size: 80))
+                            .font(.system(size: 60, weight: .bold))
                     .foregroundColor(.blue)
+                            .scaleEffect(animateIcon ? 1.1 : 1.0)
+                            .shadow(color: .blue.opacity(0.5), radius: 12, x: 0, y: 6)
+                    }
+                    .frame(height: 120)
                 
                 Text("Free up space on your device and keep your favorite memories")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white.opacity(0.8))
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                        .foregroundColor(.white)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                        .padding(.horizontal, 30)
+                        .opacity(animateDescription ? 1.0 : 0.0)
+                        .animation(.easeInOut(duration: 1.0).delay(0.5), value: animateDescription)
             }
+                .padding(.top, 50)
             
             Spacer()
             
+                // Continue button with gradient and animation
             Button(action: onContinue) {
-                Text("Continue")
-                    .font(.system(size: 18, weight: .bold))
+                    HStack(spacing: 12) {
+                        Text("Sounds Great!")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
+                        
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                    }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(height: 56)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.blue, Color.purple]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                    .scaleEffect(animateButton ? 1.0 : 0.95)
+                    .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
             }
             .padding(.horizontal, 40)
             .padding(.bottom, 50)
         }
-        .padding(.top, 80)
+        }
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateIcon = true
+            animateDescription = true
+            animateButton = true
+        }
     }
 }
 
@@ -298,65 +549,177 @@ struct BenefitsView: View {
 struct AgeView: View {
     @Binding var selectedAge: String
     let onContinue: () -> Void
+    @State private var animateTitle = false
+    @State private var animateOptions = false
+    @State private var animateButton = false
     
     private let ageRanges = ["Under 18", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"]
     
     var body: some View {
-        VStack(spacing: 40) {
-            Text("What's your age?")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
             
+            VStack(spacing: 0) {
+                // Header with animated title
             VStack(spacing: 16) {
-                ForEach(ageRanges, id: \.self) { age in
-                    Button(action: {
-                        selectedAge = age
-                    }) {
-                        HStack {
-                            Image(systemName: selectedAge == age ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 20))
-                                .foregroundColor(selectedAge == age ? .blue : .gray)
-                            
-                            Text(age)
-                                .font(.system(size: 16, weight: .medium))
+                    Text("What's your age?")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
                                 .foregroundColor(.white)
-                            
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(selectedAge == age ? Color.blue.opacity(0.2) : Color.gray.opacity(0.1))
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                    
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Age options with animations
+                VStack(spacing: 12) {
+                    ForEach(Array(ageRanges.enumerated()), id: \.element) { index, age in
+                        AgeOptionButton(
+                            age: age,
+                            isSelected: selectedAge == age,
+                            onTap: { selectedAge = age },
+                            animationDelay: Double(index) * 0.1,
+                            isAnimating: animateOptions
                         )
                     }
                 }
-            }
-            .padding(.horizontal, 40)
+                .padding(.top, 40)
+                .padding(.horizontal, 30)
             
             Spacer()
             
+                // Button section
             HStack(spacing: 20) {
                 Button("Skip") {
                     onContinue()
                 }
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white.opacity(0.7))
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+                    .opacity(animateButton ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 1.0).delay(0.8), value: animateButton)
                 
                 Button(action: onContinue) {
+                        HStack(spacing: 12) {
                     Text("Continue")
-                        .font(.system(size: 18, weight: .bold))
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
+                            
+                            Image(systemName: "arrow.right.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.white)
+                        }
                         .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(Color.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .frame(height: 56)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [Color.blue, Color.purple]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                        .scaleEffect(animateButton ? 1.0 : 0.95)
+                        .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
                 }
             }
             .padding(.horizontal, 40)
             .padding(.bottom, 50)
         }
-        .padding(.top, 80)
+        }
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateOptions = true
+            animateButton = true
+        }
+    }
+}
+
+// MARK: - Age Option Button
+struct AgeOptionButton: View {
+    let age: String
+    let isSelected: Bool
+    let onTap: () -> Void
+    let animationDelay: Double
+    let isAnimating: Bool
+    
+    @State private var buttonScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 16) {
+                ZStack {
+                    // Glow effect for selected state
+                    if isSelected {
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 28, height: 28)
+                            .blur(radius: 8)
+                            .opacity(glowOpacity)
+                    }
+                    
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(isSelected ? .blue : .white.opacity(0.6))
+                        .scaleEffect(buttonScale)
+                }
+                
+                Text(age)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                .foregroundColor(.white)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? Color.white.opacity(0.2) : Color.white.opacity(0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(isSelected ? Color.blue.opacity(0.5) : Color.clear, lineWidth: 2)
+                    )
+            )
+            .shadow(color: isSelected ? .blue.opacity(0.3) : .clear, radius: 8, x: 0, y: 4)
+            .scaleEffect(isAnimating ? 1.0 : 0.9)
+            .opacity(isAnimating ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.6).delay(animationDelay), value: isAnimating)
+        }
+        .onAppear {
+            if isSelected {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            }
+        }
+        .onChange(of: isSelected) { newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            } else {
+                buttonScale = 1.0
+                glowOpacity = 0.0
+            }
+        }
     }
 }
 
@@ -364,76 +727,175 @@ struct AgeView: View {
 struct PhotoCountView: View {
     @Binding var selectedCount: PhotoCount?
     let onContinue: () -> Void
+    @State private var animateTitle = false
+    @State private var animateOptions = false
+    @State private var animateButton = false
     
     var body: some View {
-        VStack(spacing: 40) {
-            headerSection
-            optionsSection
-            Spacer()
-            continueButton
-        }
-        .padding(.top, 80)
-    }
-    
-    private var headerSection: some View {
-        VStack(spacing: 20) {
-            Text("How many photos do you have?")
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-        }
-    }
-    
-    private var optionsSection: some View {
-        VStack(spacing: 16) {
-            ForEach(Array(PhotoCount.allCases.enumerated()), id: \.element) { _, count in
-                optionButton(for: count)
-            }
-        }
-        .padding(.horizontal)
-    }
-    
-    private func optionButton(for count: PhotoCount) -> some View {
-        Button(action: {
-            selectedCount = count
-        }) {
-            HStack {
-                Text(count.rawValue)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white)
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
+            
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
+                    Text("How many photos do you have?")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
+                        .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                    
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Photo count options with animations
+                VStack(spacing: 12) {
+                    ForEach(Array(PhotoCount.allCases.enumerated()), id: \.element) { index, count in
+                        PhotoCountOptionButton(
+                            count: count,
+                            isSelected: selectedCount == count,
+                            onTap: { selectedCount = count },
+                            animationDelay: Double(index) * 0.1,
+                            isAnimating: animateOptions
+                        )
+                    }
+                }
+                .padding(.top, 40)
+                .padding(.horizontal, 30)
                 
                 Spacer()
                 
-                if selectedCount == count {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                }
+                // Button section
+        HStack(spacing: 20) {
+            Button("Skip") {
+                onContinue()
             }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(backgroundColor(for: count))
-            )
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+                    .opacity(animateButton ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 1.0).delay(0.8), value: animateButton)
+            
+            Button(action: onContinue) {
+                        HStack(spacing: 12) {
+                Text("Continue")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                            
+                            Image(systemName: "arrow.right.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.white)
+                        }
+                    .frame(maxWidth: .infinity)
+                        .frame(height: 56)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [Color.blue, Color.purple]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                        .scaleEffect(animateButton ? 1.0 : 0.95)
+                        .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
+            }
         }
-    }
-    
-    private var continueButton: some View {
-        Button(action: onContinue) {
-            Text("Continue")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 50)
-                .background(selectedCount != nil ? Color.blue : Color.gray)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-        .disabled(selectedCount == nil)
         .padding(.horizontal, 40)
         .padding(.bottom, 50)
     }
+        }
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateOptions = true
+            animateButton = true
+        }
+    }
+}
+
+// MARK: - Photo Count Option Button
+struct PhotoCountOptionButton: View {
+    let count: PhotoCount
+    let isSelected: Bool
+    let onTap: () -> Void
+    let animationDelay: Double
+    let isAnimating: Bool
     
-    private func backgroundColor(for count: PhotoCount) -> Color {
-        return selectedCount == count ? Color.white.opacity(0.3) : Color.white.opacity(0.1)
+    @State private var buttonScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 16) {
+                ZStack {
+                    // Glow effect for selected state
+                    if isSelected {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 28, height: 28)
+                            .blur(radius: 8)
+                            .opacity(glowOpacity)
+                    }
+                    
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(isSelected ? .green : .white.opacity(0.6))
+                        .scaleEffect(buttonScale)
+                }
+                
+                Text(count.rawValue)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                .foregroundColor(.white)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? Color.white.opacity(0.2) : Color.white.opacity(0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(isSelected ? Color.green.opacity(0.5) : Color.clear, lineWidth: 2)
+                    )
+            )
+            .shadow(color: isSelected ? .green.opacity(0.3) : .clear, radius: 8, x: 0, y: 4)
+            .scaleEffect(isAnimating ? 1.0 : 0.9)
+            .opacity(isAnimating ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.6).delay(animationDelay), value: isAnimating)
+        }
+        .onAppear {
+            if isSelected {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            }
+        }
+        .onChange(of: isSelected) { newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            } else {
+                buttonScale = 1.0
+                glowOpacity = 0.0
+            }
+        }
     }
 }
 
@@ -441,76 +903,175 @@ struct PhotoCountView: View {
 struct CleaningFrequencyView: View {
     @Binding var selectedFrequency: CleaningFrequency?
     let onContinue: () -> Void
+    @State private var animateTitle = false
+    @State private var animateOptions = false
+    @State private var animateButton = false
     
     var body: some View {
-        VStack(spacing: 40) {
-            headerSection
-            optionsSection
-            Spacer()
-            continueButton
-        }
-        .padding(.top, 80)
-    }
-    
-    private var headerSection: some View {
-        VStack(spacing: 20) {
-            Text("How often do you clean your photos?")
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-        }
-    }
-    
-    private var optionsSection: some View {
-        VStack(spacing: 16) {
-            ForEach(Array(CleaningFrequency.allCases.enumerated()), id: \.element) { _, frequency in
-                optionButton(for: frequency)
-            }
-        }
-        .padding(.horizontal)
-    }
-    
-    private func optionButton(for frequency: CleaningFrequency) -> some View {
-        Button(action: {
-            selectedFrequency = frequency
-        }) {
-            HStack {
-                Text(frequency.rawValue)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white)
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
+            
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
+                    Text("How often do you clean your photos?")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
+                        .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Frequency options with animations
+                VStack(spacing: 12) {
+                    ForEach(Array(CleaningFrequency.allCases.enumerated()), id: \.element) { index, frequency in
+                        FrequencyOptionButton(
+                            frequency: frequency,
+                            isSelected: selectedFrequency == frequency,
+                            onTap: { selectedFrequency = frequency },
+                            animationDelay: Double(index) * 0.1,
+                            isAnimating: animateOptions
+                        )
+                    }
+                }
+                .padding(.top, 40)
+                .padding(.horizontal, 30)
                 
                 Spacer()
                 
-                if selectedFrequency == frequency {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                }
+                // Button section
+        HStack(spacing: 20) {
+            Button("Skip") {
+                onContinue()
             }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(backgroundColor(for: frequency))
-            )
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+                    .opacity(animateButton ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 1.0).delay(0.8), value: animateButton)
+            
+            Button(action: onContinue) {
+                        HStack(spacing: 12) {
+                Text("Continue")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                            
+                            Image(systemName: "arrow.right.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.white)
+                        }
+                    .frame(maxWidth: .infinity)
+                        .frame(height: 56)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [Color.blue, Color.purple]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                        .scaleEffect(animateButton ? 1.0 : 0.95)
+                        .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
+            }
         }
-    }
-    
-    private var continueButton: some View {
-        Button(action: onContinue) {
-            Text("Continue")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 50)
-                .background(selectedFrequency != nil ? Color.blue : Color.gray)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-        .disabled(selectedFrequency == nil)
         .padding(.horizontal, 40)
         .padding(.bottom, 50)
     }
+        }
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateOptions = true
+            animateButton = true
+        }
+    }
+}
+
+// MARK: - Frequency Option Button
+struct FrequencyOptionButton: View {
+    let frequency: CleaningFrequency
+    let isSelected: Bool
+    let onTap: () -> Void
+    let animationDelay: Double
+    let isAnimating: Bool
     
-    private func backgroundColor(for frequency: CleaningFrequency) -> Color {
-        return selectedFrequency == frequency ? Color.white.opacity(0.3) : Color.white.opacity(0.1)
+    @State private var buttonScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 16) {
+                ZStack {
+                    // Glow effect for selected state
+                    if isSelected {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 28, height: 28)
+                            .blur(radius: 8)
+                            .opacity(glowOpacity)
+                    }
+                    
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(isSelected ? .orange : .white.opacity(0.6))
+                        .scaleEffect(buttonScale)
+                }
+                
+                Text(frequency.rawValue)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                .foregroundColor(.white)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? Color.white.opacity(0.2) : Color.white.opacity(0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(isSelected ? Color.orange.opacity(0.5) : Color.clear, lineWidth: 2)
+                    )
+            )
+            .shadow(color: isSelected ? .orange.opacity(0.3) : .clear, radius: 8, x: 0, y: 4)
+            .scaleEffect(isAnimating ? 1.0 : 0.9)
+            .opacity(isAnimating ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.6).delay(animationDelay), value: isAnimating)
+        }
+        .onAppear {
+            if isSelected {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            }
+        }
+        .onChange(of: isSelected) { newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            } else {
+                buttonScale = 1.0
+                glowOpacity = 0.0
+            }
+        }
     }
 }
 
@@ -518,76 +1079,172 @@ struct CleaningFrequencyView: View {
 struct ContentTypeView: View {
     @Binding var selectedType: ContentType?
     let onContinue: () -> Void
+    @State private var animateTitle = false
+    @State private var animateOptions = false
+    @State private var animateButton = false
     
     var body: some View {
-        VStack(spacing: 40) {
-            headerSection
-            optionsSection
-            Spacer()
-            continueButton
-        }
-        .padding(.top, 80)
-    }
-    
-    private var headerSection: some View {
-        VStack(spacing: 20) {
-            Text("What would you like to clean?")
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-        }
-    }
-    
-    private var optionsSection: some View {
-        VStack(spacing: 16) {
-            ForEach(Array(ContentType.allCases.enumerated()), id: \.element) { _, type in
-                optionButton(for: type)
-            }
-        }
-        .padding(.horizontal)
-    }
-    
-    private func optionButton(for type: ContentType) -> some View {
-        Button(action: {
-            selectedType = type
-        }) {
-            HStack {
-                Text(type.rawValue)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white)
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
+            
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
+                    Text("What would you like to clean?")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
+                        .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                    
+                    Text("You can change this later in settings")
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                        .opacity(animateTitle ? 1.0 : 0.7)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Content type options with animations
+                VStack(spacing: 12) {
+                    ForEach(Array(ContentType.allCases.enumerated()), id: \.element) { index, type in
+                        ContentTypeOptionButton(
+                            type: type,
+                            isSelected: selectedType == type,
+                            onTap: { selectedType = type },
+                            animationDelay: Double(index) * 0.1,
+                            isAnimating: animateOptions
+                        )
+                    }
+                }
+                .padding(.top, 40)
+                .padding(.horizontal, 30)
                 
                 Spacer()
                 
-                if selectedType == type {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                }
-            }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(backgroundColor(for: type))
-            )
-        }
-    }
-    
-    private var continueButton: some View {
+                // Continue button with gradient and animation
         Button(action: onContinue) {
+                    HStack(spacing: 12) {
             Text("Continue")
-                .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
+                        
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.white)
+                    }
                 .frame(maxWidth: .infinity)
-                .frame(height: 50)
-                .background(selectedType != nil ? Color.blue : Color.gray)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(height: 56)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.blue, Color.purple]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                    .scaleEffect(animateButton ? 1.0 : 0.95)
+                    .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
         }
         .disabled(selectedType == nil)
+                .opacity(selectedType != nil ? 1.0 : 0.6)
         .padding(.horizontal, 40)
         .padding(.bottom, 50)
+            }
+        }
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateOptions = true
+            animateButton = true
+        }
     }
+}
+
+// MARK: - Content Type Option Button
+struct ContentTypeOptionButton: View {
+    let type: ContentType
+    let isSelected: Bool
+    let onTap: () -> Void
+    let animationDelay: Double
+    let isAnimating: Bool
     
-    private func backgroundColor(for type: ContentType) -> Color {
-        return selectedType == type ? Color.white.opacity(0.3) : Color.white.opacity(0.1)
+    @State private var buttonScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 16) {
+                ZStack {
+                    // Glow effect for selected state
+                    if isSelected {
+                        Circle()
+                            .fill(Color.purple)
+                            .frame(width: 28, height: 28)
+                            .blur(radius: 8)
+                            .opacity(glowOpacity)
+                    }
+                    
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(isSelected ? .purple : .white.opacity(0.6))
+                        .scaleEffect(buttonScale)
+                }
+                
+                Text(type.rawValue)
+                    .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundColor(.white)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? Color.white.opacity(0.2) : Color.white.opacity(0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(isSelected ? Color.purple.opacity(0.5) : Color.clear, lineWidth: 2)
+                    )
+            )
+            .shadow(color: isSelected ? .purple.opacity(0.3) : .clear, radius: 8, x: 0, y: 4)
+            .scaleEffect(isAnimating ? 1.0 : 0.9)
+            .opacity(isAnimating ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.6).delay(animationDelay), value: isAnimating)
+        }
+        .onAppear {
+            if isSelected {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            }
+        }
+        .onChange(of: isSelected) { newValue in
+            if newValue {
+                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                    buttonScale = 1.1
+                    glowOpacity = 0.6
+                }
+            } else {
+                buttonScale = 1.0
+                glowOpacity = 0.0
+            }
+        }
     }
 }
 
@@ -596,33 +1253,140 @@ struct PreparingView: View {
     @Binding var progress: Double
     let onComplete: () -> Void
     @State private var timer: Timer?
+    @State private var animateTitle = false
+    @State private var animateProgress = false
+    @State private var animateIcon = false
+    @State private var animateCompletion = false
     
     var body: some View {
-        VStack(spacing: 40) {
-            Text("Thanks! Preparing your experience now")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
             
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
+            Text("Thanks! Preparing your experience now")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
+                .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                    
+                    Text("Setting up everything just for you")
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                        .opacity(animateTitle ? 1.0 : 0.7)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                }
+                .padding(.top, 100)
+                .padding(.horizontal, 40)
+                
+                // Animated icon section
+                VStack(spacing: 30) {
+                    ZStack {
+                        // Glow effect
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 120, height: 120)
+                            .blur(radius: 30)
+                            .opacity(animateIcon ? 0.6 : 0.0)
+                            .scaleEffect(animateIcon ? 1.2 : 1.0)
+                        
+                        // Main icon
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 60, weight: .bold))
+                            .foregroundColor(.blue)
+                            .scaleEffect(animateIcon ? 1.1 : 1.0)
+                            .shadow(color: .blue.opacity(0.5), radius: 12, x: 0, y: 6)
+                            .rotationEffect(.degrees(animateIcon ? 360 : 0))
+                            .animation(.linear(duration: 3.0).repeatForever(autoreverses: false), value: animateIcon)
+                    }
+                    .frame(height: 120)
+                    
+                    // Progress section
             VStack(spacing: 20) {
-                ProgressView(value: clampedProgress)
-                    .progressViewStyle(LinearProgressViewStyle(tint: .blue))
-                    .frame(height: 8)
+                        // Custom progress bar
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color.white.opacity(0.2))
+                                .frame(height: 12)
+                            
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [Color.blue, Color.purple]),
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: max(0, UIScreen.main.bounds.width - 80) * clampedProgress, height: 12)
+                                .animation(.easeInOut(duration: 0.3), value: clampedProgress)
+                        }
                     .padding(.horizontal, 40)
                 
                 Text("\(Int(clampedProgress * 100))%")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-            }
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .scaleEffect(animateProgress ? 1.1 : 1.0)
+                            .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: animateProgress)
+                    }
+                    .opacity(animateProgress ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 1.0).delay(0.5), value: animateProgress)
+                }
+                .padding(.top, 60)
             
             Spacer()
+                
+                // Completion message
+                if clampedProgress >= 1.0 {
+                    VStack(spacing: 16) {
+                        Text("✨ All set! ✨")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        
+                        Text("Your personalized experience is ready")
+                            .font(.system(size: 18, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                    .opacity(animateCompletion ? 1.0 : 0.0)
+                    .scaleEffect(animateCompletion ? 1.0 : 0.8)
+                    .animation(.easeInOut(duration: 1.0).delay(0.5), value: animateCompletion)
+                    .padding(.bottom, 50)
+                }
+            }
         }
-        .padding(.top, 150)
         .onAppear {
+            // Start animations
+            animateTitle = true
+            animateIcon = true
+            animateProgress = true
+            
+            // Start progress
             startProgress()
         }
         .onDisappear {
             timer?.invalidate()
+        }
+        .onChange(of: clampedProgress) { newValue in
+            if newValue >= 1.0 {
+                animateCompletion = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    onComplete()
+                }
+            }
         }
     }
     
@@ -636,7 +1400,6 @@ struct PreparingView: View {
                 progress = min(progress + 0.017, 1.0) // Clamp to 1.0
             } else {
                 timer?.invalidate()
-                onComplete()
             }
         }
     }
@@ -645,116 +1408,304 @@ struct PreparingView: View {
 // MARK: - Free Trial Intro View
 struct FreeTrialIntroView: View {
     let onContinue: () -> Void
-    @State private var player: AVPlayer?
+    @State private var paywallTrigger = 0
+    @State private var animateTitle = false
+    @State private var animateIcon = false
+    @State private var animateBenefits = false
+    @State private var animateButton = false
+    @EnvironmentObject private var purchaseManager: PurchaseManager
     
     var body: some View {
-        VStack(spacing: 40) {
-            Text("We want you to use CleanSwipe for free")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
             
-            // Video player placeholder
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.gray.opacity(0.3))
-                .frame(height: 200)
-                .overlay(
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.white.opacity(0.7))
-                )
+            VStack(spacing: 0) {
+                // Header with animated title
+                VStack(spacing: 16) {
+                    Text("Unlock Your Photo Freedom")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
+                .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                    
+                    Text("Experience CleanSwipe Premium for free")
+                        .font(.system(size: 20, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                        .opacity(animateTitle ? 1.0 : 0.7)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                }
+                .padding(.top, 60)
+                .padding(.horizontal, 40)
+                
+                // Animated icon section
+                VStack(spacing: 24) {
+                    ZStack {
+                        // Glow effect
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 120, height: 120)
+                            .blur(radius: 30)
+                            .opacity(animateIcon ? 0.6 : 0.0)
+                            .scaleEffect(animateIcon ? 1.2 : 1.0)
+                        
+                        // Main icon with animation
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 60, weight: .bold))
+                            .foregroundColor(.yellow)
+                            .scaleEffect(animateIcon ? 1.1 : 1.0)
+                            .shadow(color: .yellow.opacity(0.5), radius: 12, x: 0, y: 6)
+                            .rotationEffect(.degrees(animateIcon ? 5 : -5))
+                            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateIcon)
+                    }
+                    .frame(height: 120)
+                }
+                .padding(.top, 40)
+                
+                // Benefits section with animations
+                VStack(spacing: 16) {
+                    BenefitRow(
+                        icon: "infinity",
+                        text: "Unlimited daily swipes",
+                        delay: 0.0,
+                        isAnimating: animateBenefits
+                    )
+                    
+                    BenefitRow(
+                        icon: "xmark.circle.fill",
+                        text: "No advertisements",
+                        delay: 0.2,
+                        isAnimating: animateBenefits
+                    )
+                    
+                    BenefitRow(
+                        icon: "slider.horizontal.3",
+                        text: "All photo categories & filters",
+                        delay: 0.4,
+                        isAnimating: animateBenefits
+                    )
+                    
+                    BenefitRow(
+                        icon: "chart.bar.fill",
+                        text: "Detailed progress tracking",
+                        delay: 0.6,
+                        isAnimating: animateBenefits
+                    )
+                }
+                .padding(.top, 30)
                 .padding(.horizontal, 40)
             
-            Text("No payment due now")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(.white.opacity(0.9))
+                Spacer()
+                
+                // Persuasive text
+                VStack(spacing: 12) {
+                    Text("🎉 Start your 3-day free trial today!")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
             
-            Spacer()
+                    Text("No commitment • Cancel anytime • No payment required")
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundColor(.white.opacity(0.8))
+                .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 40)
+                .opacity(animateBenefits ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 1.0).delay(0.8), value: animateBenefits)
             
-            Button(action: onContinue) {
-                Text("Try for Free")
-                    .font(.system(size: 18, weight: .bold))
+                // Buttons section
+                VStack(spacing: 16) {
+            Button(action: {
+                paywallTrigger += 1
+            }) {
+                        HStack(spacing: 12) {
+                Text("Start Free Trial")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
+                            
+                            Image(systemName: "crown.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(.yellow)
+                        }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(height: 56)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [Color.blue, Color.purple]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                        .scaleEffect(animateButton ? 1.0 : 0.95)
+                        .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
             }
             .padding(.horizontal, 40)
-            .padding(.bottom, 50)
+            
+            Button(action: onContinue) {
+                        Text("Continue with limited version")
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+                    .opacity(animateButton ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 1.0).delay(1.2), value: animateButton)
         }
-        .padding(.top, 80)
+                .padding(.bottom, 50)
+            }
+        }
+        .presentPaywallIfNeeded(
+            requiredEntitlementIdentifier: "Premium",
+            purchaseCompleted: { customerInfo in
+                onContinue()
+            },
+            restoreCompleted: { customerInfo in
+                onContinue()
+            }
+        )
+        .id(paywallTrigger)
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateIcon = true
+            animateBenefits = true
+            animateButton = true
+        }
     }
 }
 
-// MARK: - Trial Details View
-struct TrialDetailsView: View {
-    let onContinue: () -> Void
+// MARK: - Benefit Row Helper
+struct BenefitRow: View {
+    let icon: String
+    let text: String
+    let delay: Double
+    let isAnimating: Bool
+    
+    @State private var iconScale: CGFloat = 1.0
+    @State private var glowOpacity: Double = 0.0
     
     var body: some View {
-        VStack(spacing: 40) {
-            Text("How does your free trial work?")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .multilineTextAlignment(.center)
-            
-            VStack(spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Today")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.blue)
-                    
-                    Text("Unlimited swipes, all groups unlocked, no adverts")
-                        .font(.system(size: 16))
-                        .foregroundColor(.white.opacity(0.9))
-                }
+        HStack(spacing: 16) {
+            ZStack {
+                // Glow effect
+                Circle()
+                    .fill(Color.blue)
+                    .frame(width: 32, height: 32)
+                    .blur(radius: 8)
+                    .opacity(glowOpacity)
+                    .scaleEffect(iconScale)
                 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("In 3 days - free trial ends")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.blue)
-                    
-                    Text("You will not be charged before, you can cancel at any time")
-                        .font(.system(size: 16))
-                        .foregroundColor(.white.opacity(0.9))
-                }
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.blue)
+                    .scaleEffect(iconScale)
             }
-            .padding(.horizontal, 40)
+            .frame(width: 32, height: 32)
+            
+            Text(text)
+                .font(.system(size: 16, weight: .medium, design: .rounded))
+                .foregroundColor(.white)
+                .multilineTextAlignment(.leading)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
             
             Spacer()
-            
-            Button(action: onContinue) {
-                Text("Continue")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .padding(.horizontal, 40)
-            .padding(.bottom, 50)
         }
-        .padding(.top, 80)
+        .opacity(isAnimating ? 1.0 : 0.0)
+        .offset(x: isAnimating ? 0 : -20)
+        .animation(.easeInOut(duration: 0.6).delay(delay), value: isAnimating)
+        .onAppear {
+            if isAnimating {
+                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                    iconScale = 1.1
+                    glowOpacity = 0.4
+                }
+            }
+        }
     }
 }
+
+
+// MARK: - Feature Row Helper
+struct FeatureRow: View {
+    let icon: String
+    let text: String
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.blue)
+                .frame(width: 20)
+            
+            Text(text)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+                .multilineTextAlignment(.leading)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Spacer()
+        }
+    }
+}
+
+
 
 // MARK: - Final Continue View
 struct FinalContinueView: View {
     let onSkip: () -> Void
     let onContinue: () -> Void
-    
-    @StateObject private var purchaseManager = PurchaseManager.shared
-    @State private var showingAlert = false
-    @State private var alertMessage = ""
+    @State private var animateTitle = false
+    @State private var animateFeatures = false
+    @State private var animateButton = false
+    @State private var animateConfetti = false
     
     var body: some View {
-        VStack(spacing: 40) {
+        ZStack {
+            // Animated background gradient
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(red: 0.7, green: 0.85, blue: 1.0),
+                    Color(red: 0.6, green: 0.8, blue: 0.95),
+                    Color(red: 0.7, green: 0.85, blue: 1.0)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .opacity(animateTitle ? 1.0 : 0.8)
+            .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
+            
+            // Animated confetti
+            if animateConfetti {
+                ForEach(0..<20, id: \.self) { index in
+                    ConfettiPiece(
+                        delay: Double(index) * 0.1,
+                        color: [Color.blue, Color.purple, Color.green, Color.orange, Color.pink].randomElement()!
+                    )
+                }
+            }
+            
+            VStack(spacing: 0) {
+                // Close button
             HStack {
                 Button(action: onSkip) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
                 }
                 
                 Spacer()
@@ -762,139 +1713,112 @@ struct FinalContinueView: View {
             .padding(.horizontal, 20)
             .padding(.top, 20)
             
-            VStack(spacing: 30) {
-                Text("Tap continue to start cleaning up your phone and keep those memories alive")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                // Header with animated title
+                VStack(spacing: 16) {
+                    Text("🎉 You're all set!")
+                        .font(.system(size: 36, weight: .black, design: .rounded))
                     .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                        .scaleEffect(animateTitle ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top) {
-                        Text("•")
-                            .foregroundColor(.blue)
-                        Text("Make cleaning up storage fun and quick, at any time!")
-                            .foregroundColor(.white.opacity(0.9))
-                    }
-                    
-                    HStack(alignment: .top) {
-                        Text("•")
-                            .foregroundColor(.blue)
-                        Text("3 days free, then just £1/week for a premium experience")
-                            .foregroundColor(.white.opacity(0.9))
-                    }
-                    
-                    HStack(alignment: .top) {
-                        Text("•")
-                            .foregroundColor(.blue)
-                        Text("No payment now")
-                            .foregroundColor(.white.opacity(0.9))
-                    }
+                Text("Start cleaning up your photos and videos with CleanSwipe")
+                        .font(.system(size: 18, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                        .opacity(animateTitle ? 1.0 : 0.7)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
-                .font(.system(size: 16))
+                .padding(.top, 40)
+                    .padding(.horizontal, 40)
+                
+                // Features section with animations
+                VStack(alignment: .leading, spacing: 20) {
+                    FeatureRow(
+                        icon: "arrow.right.circle.fill",
+                        text: "Swipe right to keep, left to delete"
+                    )
+                    
+                    FeatureRow(
+                        icon: "calendar.circle.fill",
+                        text: "Organize by year, screenshots, or random"
+                    )
+                    
+                    FeatureRow(
+                        icon: "chart.line.uptrend.xyaxis.circle.fill",
+                        text: "Track your progress and save storage"
+                    )
+                }
+                .padding(.top, 40)
                 .padding(.horizontal, 40)
-            }
             
             Spacer()
             
-            VStack(spacing: 16) {
-                Button(action: {
-                    Task {
-                        await handleRestorePurchases()
-                    }
-                }) {
-                    HStack {
-                        if case .restoring = purchaseManager.purchaseState {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                .scaleEffect(0.8)
-                        }
+                // Get Started button with gradient and animation
+            Button(action: onContinue) {
+                    HStack(spacing: 12) {
+                        Text("Get Started!")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
                         
-                        Text("Restore Purchases")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
-                    }
-                }
-                .disabled(purchaseManager.purchaseState == .restoring || purchaseManager.purchaseState == .purchasing)
-                
-                Button(action: {
-                    Task {
-                        await handleStartTrial()
-                    }
-                }) {
-                    HStack {
-                        if case .purchasing = purchaseManager.purchaseState {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                .scaleEffect(0.8)
-                        }
-                        
-                        Text(purchaseButtonText)
-                            .font(.system(size: 18, weight: .bold))
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.system(size: 20))
                             .foregroundColor(.white)
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(purchaseButtonColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .disabled(purchaseManager.purchaseState == .purchasing || purchaseManager.purchaseState == .restoring)
+                    .frame(height: 56)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.blue, Color.purple]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
+                    .scaleEffect(animateButton ? 1.0 : 0.95)
+                    .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
             }
             .padding(.horizontal, 40)
             .padding(.bottom, 50)
         }
-        .onChange(of: purchaseManager.subscriptionStatus) { oldValue, newValue in
-            handleSubscriptionStatusChange(newValue)
         }
-        .alert("Purchase Status", isPresented: $showingAlert) {
-            Button("OK") {}
-        } message: {
-            Text(alertMessage)
-        }
-    }
-    
-    private var purchaseButtonText: String {
-        switch purchaseManager.purchaseState {
-        case .purchasing:
-            return "Starting Trial..."
-        case .restoring:
-            return "Continue"
-        case .success:
-            return "Continue"
-        default:
-            return "Start Free Trial"
+        .onAppear {
+            // Start animations
+            animateTitle = true
+            animateFeatures = true
+            animateButton = true
+            animateConfetti = true
         }
     }
+}
+
+
+
+// MARK: - Confetti Piece
+struct ConfettiPiece: View {
+    let delay: Double
+    let color: Color
+    @State private var offset: CGSize = .zero
+    @State private var rotation: Double = 0
+    @State private var scale: CGFloat = 1.0
     
-    private var purchaseButtonColor: Color {
-        switch purchaseManager.purchaseState {
-        case .purchasing, .restoring:
-            return Color.blue.opacity(0.7)
-        default:
-            return Color.blue
-        }
-    }
-    
-    private func handleStartTrial() async {
-        await purchaseManager.startTrialPurchase()
-    }
-    
-    private func handleRestorePurchases() async {
-        await purchaseManager.restorePurchases()
-    }
-    
-    private func handleSubscriptionStatusChange(_ status: SubscriptionStatus) {
-        switch status {
-        case .trial:
-            alertMessage = "Welcome to your 3-day free trial! Enjoy unlimited access to CleanSwipe Premium."
-            showingAlert = true
-            
-            // Proceed to main app after a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                onContinue()
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+            .offset(offset)
+            .rotationEffect(.degrees(rotation))
+            .scaleEffect(scale)
+            .onAppear {
+                withAnimation(.easeOut(duration: 2.0).delay(delay)) {
+                    offset = CGSize(
+                        width: CGFloat.random(in: -150...150),
+                        height: CGFloat.random(in: -300...300)
+                    )
+                    rotation = Double.random(in: 0...360)
+                    scale = CGFloat.random(in: 0.5...1.5)
+                }
             }
-        default:
-            onContinue()
-        }
     }
 }
 

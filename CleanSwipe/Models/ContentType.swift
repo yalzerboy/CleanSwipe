@@ -1,8 +1,31 @@
 import Foundation
 
-enum ContentType: String, CaseIterable {
+enum ContentType: String, CaseIterable, Codable {
     case photos = "Photos"
+    case videos = "Videos"
     case photosAndVideos = "Photos & Videos"
+    
+    var description: String {
+        switch self {
+        case .photos:
+            return "Only photos will be shown for review"
+        case .videos:
+            return "Only videos will be shown for review"
+        case .photosAndVideos:
+            return "Both photos and videos will be shown for review"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .photos:
+            return "photo"
+        case .videos:
+            return "video"
+        case .photosAndVideos:
+            return "photo.on.rectangle"
+        }
+    }
 }
 
 enum PhotoCount: String, CaseIterable {
@@ -30,7 +53,6 @@ enum OnboardingStep {
     case contentType
     case preparing
     case freeTrialIntro
-    case trialDetails
     case finalContinue
 }
 

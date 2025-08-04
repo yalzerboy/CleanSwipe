@@ -106,50 +106,118 @@ struct PhotoAccessView: View {
     @State private var photoAccessStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     
     var body: some View {
-        VStack(spacing: 40) {
+        VStack(spacing: 0) {
+            // Header
             VStack(spacing: 20) {
-                Text("Welcome to CleanSwipe")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                Text("Allow permissions to use CleanSwipe")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
-                
-                Text("Get ready to clean up your camera roll")
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
-                    .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
+                    .padding(.top, 60)
+                    .padding(.horizontal, 40)
             }
             
-            VStack(spacing: 20) {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 80))
-                    .foregroundColor(.white)
-                
-                if photoAccessStatus == .denied || photoAccessStatus == .restricted {
-                    Text("Photo access is required to use CleanSwipe. Please enable it in Settings.")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                } else {
-                    Text("But first things first, please allow CleanSwipe access to your photo gallery")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
+            // Permission items
+            VStack(spacing: 30) {
+                // Photo Library Permission
+                HStack(spacing: 20) {
+                    // Photo icon with landscape
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.yellow.opacity(0.3))
+                            .frame(width: 60, height: 60)
+                        
+                        VStack(spacing: 2) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 20))
+                                .foregroundColor(.yellow)
+                            
+                            Image(systemName: "mountain.2")
+                                .font(.system(size: 12))
+                                .foregroundColor(.green)
+                        }
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Photo Library")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                        
+                        Text("We need this in order to help you organize your photos.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
                 }
+                .padding(.horizontal, 40)
+                
+                // Notifications Permission
+                HStack(spacing: 20) {
+                    // Bell icon
+                    ZStack {
+                        Circle()
+                            .fill(Color.pink.opacity(0.3))
+                            .frame(width: 60, height: 60)
+                        
+                        Image(systemName: "bell")
+                            .font(.system(size: 24))
+                            .foregroundColor(.pink)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Notifications")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                        
+                        Text("Users who turn on reminders are 3X more likely to clean up their camera roll.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
+                }
+                .padding(.horizontal, 40)
             }
+            .padding(.top, 40)
             
             Spacer()
             
+            // Security banner
+            HStack(spacing: 12) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.white)
+                
+                Text("Your media stays secure, stored solely on your iPhone")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(Color.gray.opacity(0.3))
+            .cornerRadius(12)
+            .padding(.horizontal, 40)
+            .padding(.bottom, 20)
+            
+            // Continue button
             VStack(spacing: 16) {
                 if photoAccessStatus == .denied || photoAccessStatus == .restricted {
                     Button(action: openSettings) {
                         Text("Open Settings")
                             .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.black)
                             .frame(maxWidth: .infinity)
                             .frame(height: 50)
-                            .background(Color.blue)
+                            .background(Color.white)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     .padding(.horizontal, 40)
@@ -169,17 +237,17 @@ struct PhotoAccessView: View {
                         HStack {
                             if isRequestingPermission {
                                 ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .black))
                                     .scaleEffect(0.8)
                             } else {
-                                Text("Allow Access to Photos")
+                                Text("Continue")
                                     .font(.system(size: 18, weight: .bold))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.black)
                             }
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
-                        .background(Color.blue)
+                        .background(Color.white)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     .disabled(isRequestingPermission)
@@ -188,7 +256,6 @@ struct PhotoAccessView: View {
             }
             .padding(.bottom, 50)
         }
-        .padding(.top, 80)
         .onAppear {
             photoAccessStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         }
@@ -243,65 +310,148 @@ struct PhotoAccessView: View {
 struct NotificationPermissionView: View {
     let onContinue: () -> Void
     @State private var isRequestingPermission = false
+    @StateObject private var notificationManager = NotificationManager.shared
     
     var body: some View {
-        VStack(spacing: 40) {
+        VStack(spacing: 0) {
+            // Header
             VStack(spacing: 20) {
-                Text("Clean-up Reminders")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                Text("Allow permissions to use CleanSwipe")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
-                
-                Text("We want to let you know periodically to clean up your gallery and if there's any photos from this day that can be reviewed")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
+                    .padding(.top, 60)
                     .padding(.horizontal, 40)
             }
             
-            VStack(spacing: 20) {
-                Image(systemName: "bell.badge")
-                    .font(.system(size: 80))
-                    .foregroundColor(.white)
+            // Permission items
+            VStack(spacing: 30) {
+                // Photo Library Permission (already granted)
+                HStack(spacing: 20) {
+                    // Photo icon with landscape
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.yellow.opacity(0.3))
+                            .frame(width: 60, height: 60)
+                        
+                        VStack(spacing: 2) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 20))
+                                .foregroundColor(.yellow)
+                            
+                            Image(systemName: "mountain.2")
+                                .font(.system(size: 12))
+                                .foregroundColor(.green)
+                        }
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Photo Library")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(.white)
+                            
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.green)
+                        }
+                        
+                        Text("We need this in order to help you organize your photos.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
+                }
+                .padding(.horizontal, 40)
                 
-                Text("Please allow notifications so we can do this")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
+                // Notifications Permission
+                HStack(spacing: 20) {
+                    // Bell icon
+                    ZStack {
+                        Circle()
+                            .fill(Color.pink.opacity(0.3))
+                            .frame(width: 60, height: 60)
+                        
+                        Image(systemName: "bell")
+                            .font(.system(size: 24))
+                            .foregroundColor(.pink)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Notifications")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                        
+                        Text("Users who turn on reminders are 3X more likely to clean up their camera roll.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.leading)
+                    }
+                    
+                    Spacer()
+                }
+                .padding(.horizontal, 40)
             }
+            .padding(.top, 40)
             
             Spacer()
             
+            // Security banner
+            HStack(spacing: 12) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.white)
+                
+                Text("Your media stays secure, stored solely on your iPhone")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .background(Color.gray.opacity(0.3))
+            .cornerRadius(12)
+            .padding(.horizontal, 40)
+            .padding(.bottom, 20)
+            
+            // Continue button
             Button(action: requestNotificationPermission) {
                 HStack {
                     if isRequestingPermission {
                         ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .progressViewStyle(CircularProgressViewStyle(tint: .black))
                             .scaleEffect(0.8)
                     } else {
-                        Text("Allow Notifications")
+                        Text("Continue")
                             .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.black)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 50)
-                .background(Color.blue)
+                .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .disabled(isRequestingPermission)
             .padding(.horizontal, 40)
             .padding(.bottom, 50)
         }
-        .padding(.top, 80)
     }
     
     private func requestNotificationPermission() {
         isRequestingPermission = true
         
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
-            DispatchQueue.main.async {
+        Task {
+            let granted = await notificationManager.requestNotificationPermission()
+            
+            await MainActor.run {
                 isRequestingPermission = false
                 // Proceed regardless of permission result
                 onContinue()

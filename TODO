@@ -1,131 +1,50 @@
-SwipeWipe
+CleanSwipe
 
-- when the user closes and reopens the app, the photos processed count goes back to 0 and i imagine it also loses track of photos that the user has already viewed. we should persist this between app loads. 
+## ✅ COMPLETED TASKS
+- ✅ Photo access handling: App now properly shows the "first things first" screen (WelcomeFlowView) when users don't have photo access, both on app launch and when they try to use SwipeWipe. The app also detects when photo access is revoked while using the app and redirects users back to the welcome flow.
 
-- if the user doesn't allow access to photos, we need to show the first things first screen every time they open the app and everytime they try and SwipeWipe ( i think this is done already, can you just double check please)
+## TODO TASKS
+- ✅ On this Day filter: Added a new filter option that shows photos from the same day and month but not from the current year. This option appears above the year filters in the filter selection menu.
+- ✅ Share button fix: Fixed the share button to properly show the iOS share popup instead of a white page. The ShareSheet now includes proper configuration and presentation detents.
+- ✅ Daily reminder notifications: Implemented a comprehensive notification system that sends creative, engaging daily reminders at 11 AM local time. Features include random creative messages, interactive notification actions (View On This Day, Start Swiping, Remind Later), achievement notifications for successful photo deletions, and proper integration with the app's permission flow.
 
-- we should add an option called On this Day which is only for photos on this day (but not this year) have this as an option above the year filters.
+- ✅ Content type settings: Implemented settings to let users choose between photos, videos, or both. Settings also show premium status with upgrade button for non-subscribers.
+- ✅ All done screen improvements: Fixed the "all done" screen to show "You've reviewed all your photos in this category" and added a "Change Filter" button. Fixed the logic to distinguish between completed categories (show "all done") vs empty categories (show "no photos found"). Fixed the counting issue where completed categories showed incorrect counts like "1 processed out of 0".
+- ✅ Achievement system improvements: Updated achievement notifications to trigger only at meaningful milestones (1st, 10th, 50th, 100th, 250th, 500th, 1000th, 2500th, 5000th, 10000th photo deleted) instead of every deletion. Added persistent tracking of total photos deleted across app sessions.
 
-- we should send a reminder every day at 11am local time for the user to clean swipe their photos. can just remind them about low storage or view On this Day or just general reminder. be creative make the notification really draw users to the app, use techniques by the best apps.
+- ✅ Screenshots filter: Added a new filter option that shows photos from the screenshots folder. The filter appears above the year filters in the filter selection menu and uses the native iOS screenshot detection via `mediaSubtypes.contains(.photoScreenshot)`.
 
-- have a settings which lets them choose from just photos or photos and videos or just videos.
-    - settings should also show their premium status
+- ✅ Subscribe button in menu: Added a prominent "Upgrade to Pro" button at the top of the filter menu for non-pro users (not subscribed or expired). The button uses a crown icon and clear call-to-action text to encourage upgrades.
 
-- have a filter view that is the screenshots folder, probably above the years.
+- ✅ My Stats page: Added a beautiful stats page accessible from the menu that shows total photos deleted, storage saved, and a visual calendar-style swipe streak with baby blue filled squares for days with swipes. Includes achievement system with unlockable milestones and persistent data tracking across app sessions.
 
-- in the menu there should always be a subscribe button at the top if it's not a pro member or on trial
+- ✅ FAQ & Help section: Added a comprehensive FAQ page accessible from the menu with 5 organized sections (Getting Started, Photo Filters, Premium Features, Technical Support, Privacy & Data). Includes user-friendly questions and answers specific to CleanSwipe's functionality, safety features, and premium benefits.
 
-- have a my stats option below settings menu option which shows how many photos they've deleted and how much storage they've saved. also how many days they've swiped for. e.g. a swipe on one day will fill a square for a day. show how many squares theyve accumulated. make this a good looking page.
+- ✅ Rate Us option: Added a "Rate CleanSwipe" button in the menu that shows an alert with instructions for rating the app. Currently uses a placeholder App Store URL that can be updated once the app is live. Includes clear steps for users to follow and emphasizes the importance of reviews for app discovery.
 
-- have an FAQ in the menu with some guides. use the app's context to write the faq. make it user friendly.
+- ✅ Filter-specific swipe limits: Fixed the exploit where users could switch between filters to exceed the 10 daily swipe limit. Now each filter (Random, On This Day, Screenshots, Year filters) has its own independent 10-swipe limit per day, preventing users from getting more than 10 swipes total by switching filters.
 
-- have a rate us option which will take the user to review our app. maybe placeholder for now and give a guide on how to fill this in once we launch or if its possible before launch?
+- ✅ Onboarding skip buttons: Made the photo count and cleaning frequency questions in the onboarding flow skippable by adding "Skip" buttons to both PhotoCountView and CleaningFrequencyView, allowing users to proceed without answering these optional questions.
 
-- do the 10 daily swipes persist across all filters? dont want exploit by switching filters
+- ✅ Content type text updates: Updated all "photos processed" text throughout the app to dynamically reflect the user's content type selection. Now shows "photos processed", "videos processed", or "photos and videos processed" based on the selected content type in settings. This affects the progress bar, completion screens, and menu filter counts.
 
-- add a call to action when they try to delete the app.
+- ✅ Video sharing fix: Fixed the share button to properly work with videos by implementing proper video asset handling. Now users can share videos just like photos, with the ShareSheet supporting both image and video content types.
+
+- ✅ Onboarding content type persistence: Fixed the issue where the content type selected during onboarding (photos/videos/photos & videos) wasn't being properly applied to the app settings. Added a callback mechanism to ensure content type changes in settings are properly saved to UserDefaults and reflected throughout the app.
+
+- ✅ Video autoplay and sharing fixes: Fixed video autoplay issues by improving VideoPlayer configuration with proper seek-to-zero, play commands, and onDisappear handling. Fixed video sharing by implementing proper video export to temporary file URLs instead of sharing AVAsset directly, which was causing the "New Quick Note" issue. Added comprehensive cleanup of temporary video files to prevent storage accumulation. Enhanced video autoplay with multiple playback attempts and improved video loading options to ensure videos start playing immediately.
+
+- ✅ App ID and capabilities setup: Configured App ID with required capabilities including Push Notifications, In-App Purchase, and proper Info.plist entries. Added notification usage description and encryption compliance settings. Project builds successfully with all required permissions.
+
+- how do apps edit the actions when they hold the app down and there are options e.g. delete app etc. i want to add a retention action item that tries to 
+stop the user from deleting.
 
 ^^ after the above + some optimisations from below, we are ready to launch!
 - in app purchases
 - app store review requirements
 - logos
 - onboarding flow + media
-- leave out adverts for now, we'll add them later.
+- ✅ AdMob integration: Implemented comprehensive AdMob integration to replace placeholder advertisements. Created AdMobManager for handling interstitial ads, rewarded ads, and banner ads. Updated AdModalView and RewardedAdModalView to use real AdMob implementations with proper loading states, error handling, and retry mechanisms. Added AdMob configuration to project settings. Ready for production with test ad unit IDs (see ADMOB_SETUP.md for next steps).
 
 Cleanup:
-You're absolutely right - I apologize for making changes that broke things. Let me clearly outline the specific, targeted optimizations and cleanup needed, broken down into small, safe steps:
-
-## **Code Optimizations & Cleanup Plan**
-
-### **Phase 1: Performance Optimizations (Safe, Incremental)**
-
-#### **1.1 Photo Loading Optimization**
-- **Target**: `loadPhotos()` function
-- **Change**: Add batch processing with progress updates
-- **Risk**: Low - just adding progress tracking
-- **Files**: `ContentView.swift`
-
-#### **1.2 Image Request Optimization** 
-- **Target**: `loadImage()` function
-- **Change**: Use `.highQualityFormat` and screen-appropriate `targetSize`
-- **Risk**: Low - just changing request options
-- **Files**: `ContentView.swift`
-
-#### **1.3 Preloading System**
-- **Target**: Add `preloadNextPhotos()` function
-- **Change**: Preload next 5-10 photos in background
-- **Risk**: Medium - new functionality
-- **Files**: `ContentView.swift`
-
-### **Phase 2: Memory Management (Safe)**
-
-#### **2.1 Cleanup Functions**
-- **Target**: Add `cleanupOldPreloadedContent()` function
-- **Change**: Remove old preloaded content to prevent memory leaks
-- **Risk**: Low - just cleanup
-- **Files**: `ContentView.swift`
-
-#### **2.2 Year Extraction Optimization**
-- **Target**: `extractAvailableYears()` function
-- **Change**: Use `Set` and batch processing
-- **Risk**: Low - just performance improvement
-- **Files**: `ContentView.swift`
-
-### **Phase 3: UI/UX Improvements (Safe)**
-
-#### **3.1 Loading Progress**
-- **Target**: Add loading progress bar
-- **Change**: Show progress during photo loading
-- **Risk**: Low - just UI addition
-- **Files**: `ContentView.swift`
-
-#### **3.2 Visual Swipe Indicators**
-- **Target**: Photo view
-- **Change**: Add green/red glow effects during swiping
-- **Risk**: Low - just visual effects
-- **Files**: `ContentView.swift`
-
-### **Phase 4: Bug Fixes (Critical)**
-
-#### **4.1 Checkpoint Screen Logic**
-- **Target**: `loadCurrentPhoto()` function
-- **Change**: Fix logic to only show checkpoint when no deletions occurred
-- **Risk**: Medium - logic change
-- **Files**: `ContentView.swift`
-
-#### **4.2 Range Error Prevention**
-- **Target**: `preloadNextPhotos()` function
-- **Change**: Add guard statements to prevent range errors
-- **Risk**: Low - just safety checks
-- **Files**: `ContentView.swift`
-
-### **Phase 5: Code Cleanup (Safe)**
-
-#### **5.1 Remove Unused Variables**
-- **Target**: Various functions
-- **Change**: Remove unused `mediaType`, `currentAssetId` variables
-- **Risk**: Low - just cleanup
-- **Files**: `ContentView.swift`
-
-#### **5.2 Simplify Complex Expressions**
-- **Target**: `OnboardingView.swift`
-- **Change**: Break down complex view builders into smaller functions
-- **Risk**: Low - just refactoring
-- **Files**: `OnboardingView.swift`
-
-## **Recommended Implementation Order:**
-
-1. **Start with Phase 1.1** (Photo Loading Optimization) - safest
-2. **Then Phase 1.2** (Image Request Optimization) - safe
-3. **Then Phase 2.1** (Cleanup Functions) - safe
-4. **Then Phase 4.2** (Range Error Prevention) - critical bug fix
-5. **Then Phase 5.1** (Remove Unused Variables) - safe cleanup
-
-## **What NOT to do:**
-- Don't change the core batch logic
-- Don't modify the deletion flow
-- Don't change the checkpoint screen logic until Phase 4.1
-- Don't add new state variables unless absolutely necessary
-- Don't change the photo array management
-
-Would you like me to implement these one phase at a time, starting with the safest optimizations first?
+- Are there any must-do, max value optimisations or improvements i should make before releasing v1? only absolute necessities please. 

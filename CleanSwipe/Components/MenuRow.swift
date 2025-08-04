@@ -68,10 +68,22 @@ struct AsyncMenuRow: View {
     let isSelected: Bool
     let processedCount: Int?
     let action: () -> Void
-    let photoCounter: (Int) -> Int
+    let photoCounter: () -> Int
+    let contentType: ContentType
     
     @State private var photoCount: Int?
     @State private var isLoading = true
+    
+    private var contentTypeText: String {
+        switch contentType {
+        case .photos:
+            return "photos"
+        case .videos:
+            return "videos"
+        case .photosAndVideos:
+            return "photos and videos"
+        }
+    }
     
     var body: some View {
         HStack {
@@ -87,38 +99,49 @@ struct AsyncMenuRow: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.primary)
                 
-                HStack {
-                    Text(subtitle)
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                    
-                    if let processedCount = processedCount {
-                        if processedCount > 0 {
-                            let totalCount = photoCount ?? 0
-                            let isComplete = totalCount > 0 && processedCount >= totalCount
+                if let processedCount = processedCount {
+                    if processedCount > 0 {
+                        let remainingCount = photoCount ?? 0
+                        let totalCount = remainingCount + processedCount
+                        let isComplete = remainingCount == 0
+                        
+                        HStack(spacing: 4) {
+                            Text("\(processedCount) of \(totalCount) \(contentTypeText) processed")
+                                .font(.system(size: 14))
+                                .foregroundColor(isComplete ? .green : .orange)
                             
-                            HStack(spacing: 2) {
-                                Text("(\(processedCount)/\(totalCount))")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(isComplete ? .green : .orange)
-                                
-                                if isComplete {
-                                    Text("🎉")
-                                        .font(.system(size: 10))
-                                }
+                            if isComplete {
+                                Text("🎉")
+                                    .font(.system(size: 12))
                             }
                         }
+                    } else {
+                        if isLoading {
+                            HStack(spacing: 4) {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                                Text("Loading...")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                            }
+                        } else if let count = photoCount {
+                            Text("\(count) \(contentTypeText) available")
+                                .font(.system(size: 14))
+                                .foregroundColor(.secondary)
+                        }
                     }
-                    
+                } else {
                     if isLoading {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                        Text("Loading...")
-                            .font(.system(size: 14))
-                            .foregroundColor(.secondary)
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                            Text("Loading...")
+                                .font(.system(size: 14))
+                                .foregroundColor(.secondary)
+                        }
                     } else if let count = photoCount {
-                        Text("/\(count)")
-                            .font(.system(size: 12, weight: .medium))
+                        Text("\(count) \(contentTypeText)")
+                            .font(.system(size: 14))
                             .foregroundColor(.secondary)
                     }
                 }
@@ -145,7 +168,7 @@ struct AsyncMenuRow: View {
         guard photoCount == nil else { return }
         
         DispatchQueue.global(qos: .userInitiated).async {
-            let count = photoCounter(0) // We don't need the year parameter anymore
+            let count = photoCounter()
             DispatchQueue.main.async {
                 self.photoCount = count
                 self.isLoading = false

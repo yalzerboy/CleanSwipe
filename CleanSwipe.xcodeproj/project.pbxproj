@@ -7,7 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EE62A4062E2D528200446E87 /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = EE62A4052E2D528200446E87 /* GoogleMobileAds */; };
 		EEAA6BDF2E0F3D8200AAE69D /* onboarding_video.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = EEAA6BDE2E0F3D8200AAE69D /* onboarding_video.mp4 */; };
+		EEB3FE5C2E2C53280024D0AD /* ReceiptParser in Frameworks */ = {isa = PBXBuildFile; productRef = EEB3FE5B2E2C53280024D0AD /* ReceiptParser */; };
+		EEB3FE5E2E2C53280024D0AD /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = EEB3FE5D2E2C53280024D0AD /* RevenueCat */; };
+		EEB3FE602E2C53280024D0AD /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = EEB3FE5F2E2C53280024D0AD /* RevenueCatUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,9 +38,22 @@
 		EEAA6BDE2E0F3D8200AAE69D /* onboarding_video.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = onboarding_video.mp4; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		EE62A46A2E2D567A00446E87 /* Exceptions for "CleanSwipe" folder in "CleanSwipe" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EE1AF8A22E0F30A9006C633D /* CleanSwipe */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		EE1AF8A52E0F30A9006C633D /* CleanSwipe */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EE62A46A2E2D567A00446E87 /* Exceptions for "CleanSwipe" folder in "CleanSwipe" target */,
+			);
 			path = CleanSwipe;
 			sourceTree = "<group>";
 		};
@@ -57,6 +74,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EE62A4062E2D528200446E87 /* GoogleMobileAds in Frameworks */,
+				EEB3FE5E2E2C53280024D0AD /* RevenueCat in Frameworks */,
+				EEB3FE5C2E2C53280024D0AD /* ReceiptParser in Frameworks */,
+				EEB3FE602E2C53280024D0AD /* RevenueCatUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +139,10 @@
 			);
 			name = CleanSwipe;
 			packageProductDependencies = (
+				EEB3FE5B2E2C53280024D0AD /* ReceiptParser */,
+				EEB3FE5D2E2C53280024D0AD /* RevenueCat */,
+				EEB3FE5F2E2C53280024D0AD /* RevenueCatUI */,
+				EE62A4052E2D528200446E87 /* GoogleMobileAds */,
 			);
 			productName = CleanSwipe;
 			productReference = EE1AF8A32E0F30A9006C633D /* CleanSwipe.app */;
@@ -201,6 +226,10 @@
 			);
 			mainGroup = EE1AF89A2E0F30A9006C633D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				EEB3FE5A2E2C53280024D0AD /* XCRemoteSwiftPackageReference "purchases-ios" */,
+				EE62A4042E2D528200446E87 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EE1AF8A42E0F30A9006C633D /* Products */;
 			projectDirPath = "";
@@ -406,7 +435,12 @@
 				DEVELOPMENT_TEAM = 63FZ6N973R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CleanSwipe/Info.plist;
+				INFOPLIST_KEY_GADApplicationIdentifier = "ca-app-pub-4682463617947690~4306443417";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "CleanSwipe needs access to your photos to help you organize and clean up your photo library by swiping to keep or delete photos.";
+				INFOPLIST_KEY_SKAdNetworkItems = "cstr6suwn9.skadnetwork 4fzdc2evr5.skadnetwork 4pfyvq9l8r.skadnetwork 2fnua5tdw4.skadnetwork ydx93a7ass.skadnetwork 5a6flpkh64.skadnetwork p78axxw29g.skadnetwork v72qych5uu.skadnetwork ludvb6z3bs.skadnetwork c6k4g5qg8m.skadnetwork s39g8k73mm.skadnetwork 3qy4746246.skadnetwork 3sh42y64q3.skadnetwork f38h382jlk.skadnetwork hs6bdukanm.skadnetwork v4nxqhlyqp.skadnetwork wzmmz9fp6w.skadnetwork yclnxrl5pm.skadnetwork t38b2kh725.skadnetwork 7ug5zh24hu.skadnetwork 9rd848q2bz.skadnetwork n6fk4nfna4.skadnetwork v9wttpbfk9.skadnetwork n38lu8286q.skadnetwork 47vhws6wlr.skadnetwork kbd757ywx3.skadnetwork 9t245vhmpl.skadnetwork eh6m2bh4zr.skadnetwork a2p9lx4jpn.skadnetwork 22mmun2rn5.skadnetwork 4468km3ulz.skadnetwork 2u9pt9hc89.skadnetwork 8s468mfl3y.skadnetwork klf5c3l5u5.skadnetwork ppxm28t8ap.skadnetwork 424m5254lk.skadnetwork uw77j35x4d.skadnetwork pwa73g5rt2.skadnetwork mlmmfzh3r3.skadnetwork 578prtvx9j.skadnetwork 4dzt52r2t5.skadnetwork e5fvkxwrpn.skadnetwork 8c4e2ghe7u.skadnetwork zq492l623r.skadnetwork 3rd42ekr43.skadnetwork 3qcr597p9d.skadnetwork";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -417,7 +451,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.yalun.CleanSwipe;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yalun.cleanswipe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -436,7 +470,12 @@
 				DEVELOPMENT_TEAM = 63FZ6N973R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CleanSwipe/Info.plist;
+				INFOPLIST_KEY_GADApplicationIdentifier = "ca-app-pub-4682463617947690~4306443417";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "CleanSwipe needs access to your photos to help you organize and clean up your photo library by swiping to keep or delete photos.";
+				INFOPLIST_KEY_SKAdNetworkItems = "cstr6suwn9.skadnetwork 4fzdc2evr5.skadnetwork 4pfyvq9l8r.skadnetwork 2fnua5tdw4.skadnetwork ydx93a7ass.skadnetwork 5a6flpkh64.skadnetwork p78axxw29g.skadnetwork v72qych5uu.skadnetwork ludvb6z3bs.skadnetwork c6k4g5qg8m.skadnetwork s39g8k73mm.skadnetwork 3qy4746246.skadnetwork 3sh42y64q3.skadnetwork f38h382jlk.skadnetwork hs6bdukanm.skadnetwork v4nxqhlyqp.skadnetwork wzmmz9fp6w.skadnetwork yclnxrl5pm.skadnetwork t38b2kh725.skadnetwork 7ug5zh24hu.skadnetwork 9rd848q2bz.skadnetwork n6fk4nfna4.skadnetwork v9wttpbfk9.skadnetwork n38lu8286q.skadnetwork 47vhws6wlr.skadnetwork kbd757ywx3.skadnetwork 9t245vhmpl.skadnetwork eh6m2bh4zr.skadnetwork a2p9lx4jpn.skadnetwork 22mmun2rn5.skadnetwork 4468km3ulz.skadnetwork 2u9pt9hc89.skadnetwork 8s468mfl3y.skadnetwork klf5c3l5u5.skadnetwork ppxm28t8ap.skadnetwork 424m5254lk.skadnetwork uw77j35x4d.skadnetwork pwa73g5rt2.skadnetwork mlmmfzh3r3.skadnetwork 578prtvx9j.skadnetwork 4dzt52r2t5.skadnetwork e5fvkxwrpn.skadnetwork 8c4e2ghe7u.skadnetwork zq492l623r.skadnetwork 3rd42ekr43.skadnetwork 3qcr597p9d.skadnetwork";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -447,7 +486,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.yalun.CleanSwipe;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yalun.cleanswipe;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -563,6 +602,48 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		EE62A4042E2D528200446E87 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/swift-package-manager-google-mobile-ads";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.7.0;
+			};
+		};
+		EEB3FE5A2E2C53280024D0AD /* XCRemoteSwiftPackageReference "purchases-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.33.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		EE62A4052E2D528200446E87 /* GoogleMobileAds */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EE62A4042E2D528200446E87 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
+			productName = GoogleMobileAds;
+		};
+		EEB3FE5B2E2C53280024D0AD /* ReceiptParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EEB3FE5A2E2C53280024D0AD /* XCRemoteSwiftPackageReference "purchases-ios" */;
+			productName = ReceiptParser;
+		};
+		EEB3FE5D2E2C53280024D0AD /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EEB3FE5A2E2C53280024D0AD /* XCRemoteSwiftPackageReference "purchases-ios" */;
+			productName = RevenueCat;
+		};
+		EEB3FE5F2E2C53280024D0AD /* RevenueCatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EEB3FE5A2E2C53280024D0AD /* XCRemoteSwiftPackageReference "purchases-ios" */;
+			productName = RevenueCatUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = EE1AF89B2E0F30A9006C633D /* Project object */;
 }

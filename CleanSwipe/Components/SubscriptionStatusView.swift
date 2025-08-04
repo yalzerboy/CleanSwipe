@@ -1,4 +1,6 @@
 import SwiftUI
+import RevenueCatUI
+import RevenueCat
 
 struct SubscriptionStatusView: View {
     @EnvironmentObject var purchaseManager: PurchaseManager
@@ -48,50 +50,21 @@ struct SubscriptionStatusView: View {
                 
                 // Action buttons
                 VStack(spacing: 16) {
-                    if purchaseManager.subscriptionStatus == .expired {
-                        Button(action: {
-                            Task {
-                                await handleReactivate()
-                            }
-                        }) {
-                            HStack {
-                                if case .purchasing = purchaseManager.purchaseState {
-                                    ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                        .scaleEffect(0.8)
-                                }
-                                
-                                Text("Reactivate Subscription")
-                                    .font(.system(size: 18, weight: .bold))
-                                    .foregroundColor(.white)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 50)
-                            .background(Color.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .disabled(purchaseManager.purchaseState == .purchasing)
-                    }
-                    
+                    // Upgrade to Premium button
                     Button(action: {
-                        Task {
-                            await handleRestorePurchases()
-                        }
+                        // The paywall will be triggered automatically by presentPaywallIfNeeded
+                        // when the Premium entitlement is missing
                     }) {
-                        HStack {
-                            if case .restoring = purchaseManager.purchaseState {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .scaleEffect(0.8)
-                            }
-                            
-                            Text("Restore Purchases")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(.white.opacity(0.8))
-                        }
+                        Text(primaryButtonText)
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                            .background(Color.blue)
+                            .cornerRadius(16)
                     }
-                    .disabled(purchaseManager.purchaseState == .restoring)
                     
+                    // Close button
                     Button("Continue with Limited Access") {
                         onDismiss()
                     }
@@ -110,13 +83,30 @@ struct SubscriptionStatusView: View {
                 .padding(.bottom, 50)
             }
         }
-        .onChange(of: purchaseManager.purchaseState) { oldValue, newValue in
-            handlePurchaseStateChange(newValue)
-        }
+        .presentPaywallIfNeeded(
+            requiredEntitlementIdentifier: "Premium",
+            purchaseCompleted: { customerInfo in
+                onDismiss()
+            },
+            restoreCompleted: { customerInfo in
+                onDismiss()
+            }
+        )
         .alert("Purchase Status", isPresented: $showingAlert) {
             Button("OK") {}
         } message: {
             Text(alertMessage)
+        }
+    }
+    
+    private var primaryButtonText: String {
+        switch purchaseManager.subscriptionStatus {
+        case .expired:
+            return "Reactivate Premium"
+        case .cancelled:
+            return "Resubscribe to Premium"
+        default:
+            return "Upgrade to Premium"
         }
     }
     
@@ -153,72 +143,16 @@ struct SubscriptionStatusView: View {
         }
     }
     
-    private func handleReactivate() async {
-        await purchaseManager.startTrialPurchase()
-    }
-    
-    private func handleRestorePurchases() async {
-        await purchaseManager.restorePurchases()
-    }
-    
-    private func handlePurchaseStateChange(_ state: PurchaseState) {
-        switch state {
-        case .success:
-            if purchaseManager.subscriptionStatus == .trial || purchaseManager.subscriptionStatus == .active {
-                alertMessage = "Welcome back to CleanSwipe Premium! Enjoy unlimited access to all features."
-                showingAlert = true
-                
-                // Dismiss after showing success message
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    onDismiss()
-                }
-            }
-            
-        case .failed(let error):
-            if let purchaseError = error as? PurchaseError {
-                switch purchaseError {
-                case .userCancelled:
-                    // Don't show alert for user cancellation
-                    break
-                default:
-                    alertMessage = purchaseError.localizedDescription
-                    showingAlert = true
-                }
-            } else {
-                alertMessage = "Purchase failed: \(error.localizedDescription)"
-                showingAlert = true
-            }
-            
-        default:
-            break
-        }
-    }
+
 }
 
-// MARK: - Feature Row
-struct FeatureRow: View {
-    let icon: String
-    let text: String
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.blue)
-                .frame(width: 20)
-            
-            Text(text)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white.opacity(0.9))
-            
-            Spacer()
-        }
-    }
-}
+
 
 #Preview {
-    SubscriptionStatusView {
-        print("Dismissed")
-    }
+    SubscriptionStatusView(
+        onDismiss: {
+            print("Dismissed")
+        }
+    )
     .environmentObject(PurchaseManager.shared)
 } 
