@@ -54,6 +54,14 @@ struct CleanSwipeApp: App {
                         // Persist completion state and content type preference
                         UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
                         UserDefaults.standard.set(contentType.rawValue, forKey: "selectedContentType")
+                        
+                        // After onboarding completes, request ad consent once for free users, then init AdMob
+                        Task {
+                            await purchaseManager.checkSubscriptionStatus()
+                            ConsentManager.shared.requestConsentIfNeeded(for: purchaseManager.subscriptionStatus) { _ in
+                                adMobManager.setupAdMob()
+                            }
+                        }
                     }
                     .environmentObject(purchaseManager)
                 } else if !hasCompletedWelcomeFlow || !hasPhotoAccess() {
@@ -84,19 +92,27 @@ struct CleanSwipeApp: App {
                     )
                     .environmentObject(purchaseManager)
                     .environmentObject(notificationManager)
-                    .onChange(of: showingTutorial) { oldValue, newValue in
+                    .onChange(of: showingTutorial) { newValue in
                         // Persist tutorial preference
                         UserDefaults.standard.set(newValue, forKey: "showingTutorial")
                     }
                 }
             }
             .onAppear {
-                // Initialize AdMob after app is fully loaded
-                adMobManager.setupAdMob()
-                
-                // Check subscription status on app launch
+                // Check subscription status on app launch; initialize AdMob immediately for subscribers
+                // For free users, consent will be requested post-onboarding above
                 Task {
                     await purchaseManager.checkSubscriptionStatus()
+                    if purchaseManager.subscriptionStatus == .active || ConsentManager.shared.hasShownConsent {
+                        adMobManager.setupAdMob()
+                    } else {
+                        // Existing users who finished onboarding previously: refresh consent status silently
+                        ConsentManager.shared.refreshConsentStatus { isRequired in
+                            if !isRequired {
+                                adMobManager.setupAdMob()
+                            }
+                        }
+                    }
                 }
                 
                 // Schedule daily reminder if notifications are enabled

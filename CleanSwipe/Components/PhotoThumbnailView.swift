@@ -51,15 +51,19 @@ struct PhotoThumbnailView: View {
         let options = PHImageRequestOptions()
         options.isSynchronous = false
         options.deliveryMode = .opportunistic
+        options.resizeMode = .exact
+        options.isNetworkAccessAllowed = true
         
         imageManager.requestImage(
             for: asset,
-            targetSize: CGSize(width: 200.0, height: 200.0),
+            targetSize: CGSize(width: 100.0 * UIScreen.main.scale, height: 100.0 * UIScreen.main.scale),
             contentMode: .aspectFill,
             options: options
-        ) { image, _ in
+        ) { image, info in
             DispatchQueue.main.async {
-                self.image = image
+                if let image = image {
+                    self.image = image
+                }
             }
         }
     }

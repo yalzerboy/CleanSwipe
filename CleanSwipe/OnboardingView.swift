@@ -218,6 +218,8 @@ struct HowToView: View {
                     Text("Master the art of photo organization")
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .opacity(animateTitle ? 1.0 : 0.7)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
@@ -257,6 +259,8 @@ struct HowToView: View {
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 30)
                         .opacity(animateDescription ? 1.0 : 0.0)
                         .animation(.easeInOut(duration: 1.0).delay(0.5), value: animateDescription)
@@ -277,6 +281,8 @@ struct HowToView: View {
                             .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
                             .padding(.horizontal, 20)
                     }
                     .padding(.horizontal, 20)
@@ -498,6 +504,8 @@ struct BenefitsView: View {
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                         .foregroundColor(.white)
                     .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 30)
                         .opacity(animateDescription ? 1.0 : 0.0)
                         .animation(.easeInOut(duration: 1.0).delay(0.5), value: animateDescription)
@@ -926,7 +934,7 @@ struct CleaningFrequencyView: View {
             VStack(spacing: 0) {
                 // Header with animated title
                 VStack(spacing: 16) {
-                    Text("How often do you clean your photos?")
+                    Text("How often do you clean your photo gallery?")
                         .font(.system(size: 36, weight: .black, design: .rounded))
                         .foregroundColor(.white)
                         .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
@@ -1112,6 +1120,8 @@ struct ContentTypeView: View {
                     Text("You can change this later in settings")
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .opacity(animateTitle ? 1.0 : 0.7)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
@@ -1287,6 +1297,8 @@ struct PreparingView: View {
                     Text("Setting up everything just for you")
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .opacity(animateTitle ? 1.0 : 0.7)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
@@ -1360,6 +1372,8 @@ struct PreparingView: View {
                         Text("Your personalized experience is ready")
                             .font(.system(size: 18, weight: .medium, design: .rounded))
                             .foregroundColor(.white.opacity(0.9))
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .opacity(animateCompletion ? 1.0 : 0.0)
                     .scaleEffect(animateCompletion ? 1.0 : 0.8)
@@ -1431,24 +1445,32 @@ struct FreeTrialIntroView: View {
             .opacity(animateTitle ? 1.0 : 0.8)
             .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: animateTitle)
             
-            VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
                 // Header with animated title
                 VStack(spacing: 16) {
-                    Text("Unlock Your Photo Freedom")
-                        .font(.system(size: 36, weight: .black, design: .rounded))
-                .foregroundColor(.white)
-                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
-                        .scaleEffect(animateTitle ? 1.05 : 1.0)
-                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
+                        Text("Unlock Your Photo Freedom")
+                            .font(.system(size: 36, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.8)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                            .scaleEffect(animateTitle ? 1.05 : 1.0)
+                            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                     
                     Text("Experience CleanSwipe Premium for free")
                         .font(.system(size: 20, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .opacity(animateTitle ? 1.0 : 0.7)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
                 .padding(.top, 60)
-                .padding(.horizontal, 40)
+                .padding(.horizontal, 24)
                 
                 // Animated icon section
                 VStack(spacing: 24) {
@@ -1504,14 +1526,21 @@ struct FreeTrialIntroView: View {
                         isAnimating: animateBenefits
                     )
                 }
-                .padding(.top, 30)
-                .padding(.horizontal, 40)
-            
-                Spacer()
+                .padding(20)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+                .padding(.top, 24)
+                .padding(.horizontal, 24)
+                
+                Spacer(minLength: 24)
                 
                 // Persuasive text
                 VStack(spacing: 12) {
-                    Text("🎉 Start your 3-day free trial today!")
+                    Text("🎉 Start your free trial today!")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
                         .multilineTextAlignment(.center)
@@ -1520,51 +1549,64 @@ struct FreeTrialIntroView: View {
                         .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.horizontal, 40)
+                .padding(.horizontal, 24)
                 .opacity(animateBenefits ? 1.0 : 0.0)
                 .animation(.easeInOut(duration: 1.0).delay(0.8), value: animateBenefits)
             
-                // Buttons section
-                VStack(spacing: 16) {
-            Button(action: {
-                paywallTrigger += 1
-            }) {
-                        HStack(spacing: 12) {
-                Text("Start Free Trial")
-                                .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                            
-                            Image(systemName: "crown.fill")
-                                .font(.system(size: 18))
-                                .foregroundColor(.yellow)
-                        }
+                // Buttons moved to safe area inset; leave some content bottom spacing
+                Spacer(minLength: 16)
+            }
+            .frame(maxWidth: .infinity)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 12) {
+                Button(action: {
+                    paywallTrigger += 1
+                }) {
+                    HStack(spacing: 12) {
+                        Text("Start Free Trial")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.yellow)
+                    }
                     .frame(maxWidth: .infinity)
                     .frame(height: 56)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [Color.blue, Color.purple]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.blue, Color.purple]),
+                            startPoint: .leading,
+                            endPoint: .trailing
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4)
-                        .scaleEffect(animateButton ? 1.0 : 0.95)
-                        .animation(.easeInOut(duration: 1.0).delay(1.0), value: animateButton)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                    )
+                    .shadow(color: .blue.opacity(0.3), radius: 6, x: 0, y: 2)
+                }
+
+                Button(action: onContinue) {
+                    Text("Continue with limited version")
+                        .font(.system(size: 16, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .padding(.horizontal, 40)
-            
-            Button(action: onContinue) {
-                        Text("Continue with limited version")
-                            .font(.system(size: 16, weight: .medium, design: .rounded))
-                    .foregroundColor(.white.opacity(0.7))
-            }
-                    .opacity(animateButton ? 1.0 : 0.0)
-                    .animation(.easeInOut(duration: 1.0).delay(1.2), value: animateButton)
-        }
-                .padding(.bottom, 50)
-            }
+            .padding(.horizontal, 24)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .background(.ultraThinMaterial)
+            .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: -2)
         }
         .presentPaywallIfNeeded(
             requiredEntitlementIdentifier: "Premium",
@@ -1620,6 +1662,7 @@ struct BenefitRow: View {
                 .multilineTextAlignment(.leading)
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             
             Spacer()
         }
@@ -1722,9 +1765,11 @@ struct FinalContinueView: View {
                         .scaleEffect(animateTitle ? 1.05 : 1.0)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 
-                Text("Start cleaning up your photos and videos with CleanSwipe")
+            Text("Start cleaning up your photos and videos with CleanSwipe")
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .opacity(animateTitle ? 1.0 : 0.7)
                         .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: animateTitle)
                 }
@@ -1822,8 +1867,4 @@ struct ConfettiPiece: View {
     }
 }
 
-#Preview {
-    OnboardingFlowView { contentType in
-        print("Onboarding completed with content type: \(contentType)")
-    }
-} 
+// Removed preview for production

@@ -1,0 +1,2 @@
+- duplicates category
+- on the ad screen when it has the watch ad button, we should also have a button that directly allows them to subscribe to the paid premium subscription instead of watching the ad. if they subscribe then we can dismiss the advert, if not it should not let them bypass the advert they are just back to the same watch ad screen. When their trial expires, and they have the screen that says continue with limited or subscribe, this should also take them to directly buy the subscription rather than show the paywall (not sure if this is already the case though)

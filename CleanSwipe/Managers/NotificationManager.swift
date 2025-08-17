@@ -25,7 +25,9 @@ class NotificationManager: ObservableObject {
             let existingDailyReminder = requests.first { $0.identifier == self.dailyReminderIdentifier }
             
             if existingDailyReminder != nil {
+                #if DEBUG
                 print("Daily reminder already scheduled, skipping duplicate")
+                #endif
                 return
             }
             
@@ -59,9 +61,13 @@ class NotificationManager: ObservableObject {
             // Schedule the notification
             UNUserNotificationCenter.current().add(request) { error in
                 if let error = error {
+                    #if DEBUG
                     print("Error scheduling daily reminder: \(error)")
+                    #endif
                 } else {
+                    #if DEBUG
                     print("Daily reminder scheduled successfully for 11 AM")
+                    #endif
                 }
             }
             
@@ -95,9 +101,13 @@ class NotificationManager: ObservableObject {
         
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
-                print("Error scheduling test notification: \(error)")
+            #if DEBUG
+            print("Error scheduling test notification: \(error)")
+            #endif
             } else {
+                #if DEBUG
                 print("Test notification scheduled successfully")
+                #endif
             }
         }
     }
@@ -189,7 +199,9 @@ class NotificationManager: ObservableObject {
             
             return granted
         } catch {
+            #if DEBUG
             print("Error requesting notification permission: \(error)")
+            #endif
             return false
         }
     }
@@ -251,9 +263,13 @@ class NotificationManager: ObservableObject {
         
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
+                #if DEBUG
                 print("Error scheduling achievement notification: \(error)")
+                #endif
             } else {
+                #if DEBUG
                 print("Achievement notification scheduled: \(achievement.title)")
+                #endif
                 // Mark this achievement as shown
                 UserDefaults.standard.set(true, forKey: achievementKey)
             }

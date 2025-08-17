@@ -113,6 +113,8 @@ struct PhotoAccessView: View {
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
                     .padding(.top, 60)
                     .padding(.horizontal, 40)
             }
@@ -147,6 +149,9 @@ struct PhotoAccessView: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundColor(.white.opacity(0.8))
                             .multilineTextAlignment(.leading)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
                     }
                     
                     Spacer()
@@ -175,6 +180,9 @@ struct PhotoAccessView: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundColor(.white.opacity(0.8))
                             .multilineTextAlignment(.leading)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
                     }
                     
                     Spacer()
@@ -194,6 +202,8 @@ struct PhotoAccessView: View {
                 Text("Your media stays secure, stored solely on your iPhone")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
                 
                 Spacer()
                 
@@ -320,6 +330,8 @@ struct NotificationPermissionView: View {
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
                     .padding(.top, 60)
                     .padding(.horizontal, 40)
             }
@@ -360,6 +372,9 @@ struct NotificationPermissionView: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundColor(.white.opacity(0.8))
                             .multilineTextAlignment(.leading)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
                     }
                     
                     Spacer()
@@ -388,6 +403,9 @@ struct NotificationPermissionView: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundColor(.white.opacity(0.8))
                             .multilineTextAlignment(.leading)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
                     }
                     
                     Spacer()
@@ -407,6 +425,8 @@ struct NotificationPermissionView: View {
                 Text("Your media stays secure, stored solely on your iPhone")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
                 
                 Spacer()
                 

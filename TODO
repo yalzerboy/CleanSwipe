@@ -22,7 +22,7 @@ CleanSwipe
 
 - ✅ Rate Us option: Added a "Rate CleanSwipe" button in the menu that shows an alert with instructions for rating the app. Currently uses a placeholder App Store URL that can be updated once the app is live. Includes clear steps for users to follow and emphasizes the importance of reviews for app discovery.
 
-- ✅ Filter-specific swipe limits: Fixed the exploit where users could switch between filters to exceed the 10 daily swipe limit. Now each filter (Random, On This Day, Screenshots, Year filters) has its own independent 10-swipe limit per day, preventing users from getting more than 10 swipes total by switching filters.
+- ✅ Filter-specific swipe limits: Fixed the exploit where users could switch between filters to exceed the 50 daily swipe limit. Now each filter (Random, On This Day, Screenshots, Year filters) has its own independent 50‑swipe limit per day, preventing users from getting more than 50 swipes total by switching filters.
 
 - ✅ Onboarding skip buttons: Made the photo count and cleaning frequency questions in the onboarding flow skippable by adding "Skip" buttons to both PhotoCountView and CleaningFrequencyView, allowing users to proceed without answering these optional questions.
 

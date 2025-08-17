@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import StoreKit
 import Photos
 import CoreLocation
 import AVKit
@@ -58,6 +59,8 @@ struct ContentView: View {
 
     @State private var showingRewardedAd = false
     @State private var justWatchedAd = false
+    @State private var proceedToNextBatchAfterAd = false
+    @State private var showContinueScreenAfterAd = false
     @State private var paywallTrigger = 0 // Add this to force refresh
     
     // Tutorial overlay states - moved to TutorialOverlay component
@@ -96,6 +99,7 @@ struct ContentView: View {
     @State private var preloadedImages: [String: UIImage] = [:]
     @State private var preloadedVideos: [String: AVPlayer] = [:]
     @State private var isPreloading = false
+    @State private var preheatedAssetIds: Set<String> = []
     
     // Add state to track if category is completed vs empty
     @State private var isCategoryCompleted = false
@@ -116,7 +120,11 @@ struct ContentView: View {
     @State private var isDownloadingHighQuality = false
     
     // Storage management
-    @State private var storagePreference: StoragePreference = .highQuality
+    @AppStorage("storagePreference") private var storagePreferenceRaw: String = StoragePreference.highQuality.rawValue
+    private var storagePreference: StoragePreference {
+        get { StoragePreference(rawValue: storagePreferenceRaw) ?? .highQuality }
+        nonmutating set { storagePreferenceRaw = newValue.rawValue }
+    }
     @State private var showingStorageAlert = false
     
     // Settings
@@ -127,6 +135,7 @@ struct ContentView: View {
     @State private var hasShownNetworkWarning = false
     
     let imageManager = PHImageManager.default()
+    let cachingManager = PHCachingImageManager()
     let batchSize = 10
     
     // Computed properties
@@ -137,7 +146,7 @@ struct ContentView: View {
         case .trial:
             return "Free Trial Active"
         case .notSubscribed:
-            return "Free Plan (10 swipes/day)"
+            return "Free Plan (50 swipes/day)"
         case .expired:
             return "Trial Expired"
         case .cancelled:
@@ -152,7 +161,7 @@ struct ContentView: View {
     private let swipedPhotosKey = "swipedPhotosCurrentBatch"
     
     var body: some View {
-        let _ = print("🔍 Debug: View body rendered - showingReviewScreen = \(showingReviewScreen), swipedPhotos.count = \(swipedPhotos.count)")
+        // Debug print removed for production
         
         // Restore swiped photos if they were lost during view refresh
         if swipedPhotos.isEmpty && !showingReviewScreen {
@@ -161,7 +170,20 @@ struct ContentView: View {
             }
         }
         
-        return NavigationView {
+        if #available(iOS 16.0, *) {
+            return NavigationStack {
+                contentViewBody
+            }
+        } else {
+            return NavigationView {
+                contentViewBody
+            }
+            .navigationViewStyle(StackNavigationViewStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var contentViewBody: some View {
             ZStack {
                 // Background
                 Color(.systemBackground)
@@ -217,16 +239,20 @@ struct ContentView: View {
                 
                 // Ad modal
                 if showingAdModal {
-                    AdModalView {
+                    AdModalView(onDismiss: {
                         dismissAdModal()
-                    }
+                    }, onShowPaywall: {
+                        paywallTrigger += 1
+                    })
                 }
                 
                 // Rewarded ad modal
                 if showingRewardedAd {
-                    RewardedAdModalView {
+                    RewardedAdModalView(onDismiss: {
                         dismissRewardedAd()
-                    }
+                    }, onShowPaywall: {
+                        paywallTrigger += 1
+                    })
                 }
                 
 
@@ -277,7 +303,7 @@ struct ContentView: View {
                                     .foregroundColor(.secondary)
                                 let filterKey = filterKey(for: selectedFilter)
                                 let totalUsed = purchaseManager.filterSwipeCounts[filterKey, default: 0]
-                                let totalAvailable = 10 + purchaseManager.rewardedSwipesRemaining
+                                let totalAvailable = purchaseManager.freeDailySwipesPerFilter + purchaseManager.rewardedSwipesRemaining
                                 Text("\(totalUsed)/\(totalAvailable)")
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundColor(purchaseManager.canSwipeForFilter(selectedFilter) ? .primary : .red)
@@ -300,10 +326,8 @@ struct ContentView: View {
                 }
             }
             // Note: Tutorial tap handling moved to TutorialOverlay component
-        }
         .onAppear {
-            print("🔍 Debug: onAppear() - START")
-            print("🔍 Debug: onAppear() - Current swipedPhotos.count = \(swipedPhotos.count)")
+            // Debug logs removed for production
             
             setupPhotoLibraryObserver()
             loadPersistedData()
@@ -321,13 +345,13 @@ struct ContentView: View {
             
             // Only restore swiped photos if we don't already have them and we're not in review mode
             if swipedPhotos.isEmpty && !showingReviewScreen {
-                print("🔍 Debug: onAppear() - Restoring swiped photos")
+                // Debug log removed
                 restoreSwipedPhotos()
             } else {
-                print("🔍 Debug: onAppear() - Skipping restore - swipedPhotos.count = \(swipedPhotos.count), showingReviewScreen = \(showingReviewScreen)")
+                // Debug log removed
             }
             
-            print("🔍 Debug: onAppear() - END - swipedPhotos.count = \(swipedPhotos.count)")
+            // Debug log removed
         }
         .onDisappear {
             // Clean up preloaded content to prevent memory leaks
@@ -335,16 +359,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingShareSheet) {
             if let item = itemToShare {
-                ShareSheet(activityItems: [item])
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+                if #available(iOS 16.0, *) {
+                    ShareSheet(activityItems: [item])
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                } else {
+                    ShareSheet(activityItems: [item])
+                }
             }
         }
         // Note: Tutorial onChange handler moved to TutorialOverlay component
-        .onChange(of: purchaseManager.subscriptionStatus) { oldValue, newValue in
+        .onChange(of: purchaseManager.subscriptionStatus) { newValue in
             handleSubscriptionStatusChange(newValue)
-            
-
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             // Check photo access first when app becomes active
@@ -362,6 +388,16 @@ struct ContentView: View {
             Task {
                 await purchaseManager.checkSubscriptionStatus()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            // Aggressively free memory on warning
+            currentImage = nil
+            currentVideoPlayer?.pause()
+            currentVideoPlayer = nil
+            preloadedImages.removeAll()
+            for (_, player) in preloadedVideos { player.pause() }
+            preloadedVideos.removeAll()
+            stopAllPreheating()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openOnThisDayFilter)) { _ in
             // Handle notification action to open "On This Day" filter
@@ -399,20 +435,18 @@ struct ContentView: View {
                 // Handle successful restore
             }
         )
-        .onChange(of: paywallTrigger) { oldValue, newValue in
+        .onChange(of: paywallTrigger) { _ in
             // Prevent paywall from showing if user just watched an ad and has swiped photos
             if justWatchedAd && swipedPhotos.count >= batchSize {
-                print("🔍 Debug: Blocking paywall trigger - user just watched ad and has \(swipedPhotos.count) swiped photos")
-                // Reset the paywall trigger to prevent it from showing
+                // Revert the trigger to previous value by decrementing
                 DispatchQueue.main.async {
-                    paywallTrigger = oldValue
+                    paywallTrigger -= 1
                 }
             }
         }
-        .onChange(of: showingReviewScreen) { oldValue, newValue in
+        .onChange(of: showingReviewScreen) { newValue in
             // If review screen is being hidden and we have swiped photos, preserve them
-            if oldValue == true && newValue == false && swipedPhotos.count >= batchSize {
-                print("🔍 Debug: Review screen hidden, preserving \(swipedPhotos.count) swiped photos")
+            if newValue == false && swipedPhotos.count >= batchSize {
                 // Save the current swiped photos to prevent loss
                 saveSwipedPhotos()
             }
@@ -531,7 +565,7 @@ struct ContentView: View {
                             )
                             .onAppear {
                                 // Ensure video autoplays and loops
-                                print("VideoPlayer appeared, starting playback...")
+                                // Removed debug log
                                 player.seek(to: .zero)
                                 player.play()
                                 player.actionAtItemEnd = .none
@@ -539,11 +573,11 @@ struct ContentView: View {
                                 // Verify playback started
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                     if player.rate == 0 {
-                                        print("Video not playing in onAppear, restarting...")
+                                        // Removed debug log
                                         player.seek(to: .zero)
                                         player.play()
                                     } else {
-                                        print("Video is playing successfully")
+                                        // Removed debug log
                                     }
                                 }
                             }
@@ -741,12 +775,26 @@ struct ContentView: View {
             // Only load current photo if we're not in the middle of continuing from checkpoint
             if !isContinuingBatch {
                 loadCurrentPhoto()
-                // Start preloading next photos
+                // Start preloading next photos and preheat via Photos caching
                 preloadNextPhotos()
             }
             
             // Check network connectivity and show warning if needed
             checkNetworkConnectivity()
+        }
+        .onChange(of: storagePreference) { _ in
+            // If we downgraded delivery mode, don't downgrade the currently visible image.
+            // Trigger a refetch to a non-degraded result when network is allowed.
+            if let asset = currentAsset {
+                let opts = getImageOptions(for: storagePreference)
+                let size = getTargetSize(for: storagePreference)
+                if opts.isNetworkAccessAllowed {
+                    refetchHighQualityIfNeeded(for: asset, lastOptions: opts, targetSize: size)
+                }
+            }
+            // Refresh preheating window using the new policy
+            cleanupOldPreloadedContent()
+            preloadNextPhotos()
         }
     }
     
@@ -979,7 +1027,8 @@ struct ContentView: View {
                     Text("Choose how to organize your photo review session")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1020,13 +1069,11 @@ struct ContentView: View {
                                         Text("Unlock unlimited swipes and premium features")
                                             .font(.system(size: 14))
                                             .foregroundColor(.secondary)
+                                            .lineLimit(nil)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
                                     
-                                    Spacer()
-                                    
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundColor(.secondary)
+                                Spacer()
                                 }
                             }
                             .buttonStyle(PlainButtonStyle())
@@ -1054,10 +1101,6 @@ struct ContentView: View {
                                 }
                                 
                                 Spacer()
-                                
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
                             }
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -1082,10 +1125,6 @@ struct ContentView: View {
                                 }
                                 
                                 Spacer()
-                                
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
                             }
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -1110,10 +1149,6 @@ struct ContentView: View {
                                 }
                                 
                                 Spacer()
-                                
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
                             }
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -1138,10 +1173,6 @@ struct ContentView: View {
                                 }
                                 
                                 Spacer()
-                                
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
                             }
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -1217,8 +1248,8 @@ struct ContentView: View {
                     }
                 }
                 .listStyle(InsetGroupedListStyle())
-                .scrollContentBackground(.hidden)
                 .background(Color(.systemGroupedBackground))
+                .modifier(ScrollContentBackgroundHidden())
                 
 
             }
@@ -1306,7 +1337,8 @@ struct ContentView: View {
                             Text(contentType.description)
                                 .font(.system(size: 14))
                                 .foregroundColor(.secondary)
-                                .lineLimit(2)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         
                         Spacer()
@@ -1354,7 +1386,8 @@ struct ContentView: View {
                             Text(preference.description)
                                 .font(.system(size: 14))
                                 .foregroundColor(.secondary)
-                                .lineLimit(2)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         
                         Spacer()
@@ -1367,7 +1400,7 @@ struct ContentView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        storagePreference = preference
+                        self.storagePreference = preference
                         // Reload current photo with new settings
                         if !currentBatch.isEmpty && currentPhotoIndex < currentBatch.count {
                             loadCurrentPhoto()
@@ -1395,80 +1428,52 @@ struct ContentView: View {
                     Spacer()
                 }
                 .padding(.vertical, 4)
+
+                // Privacy Policy
+                Link(destination: AppConfig.privacyPolicyURL) {
+                    HStack {
+                        Text("Privacy Policy")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+
+                // Terms of Use
+                Link(destination: AppConfig.termsURL) {
+                    HStack {
+                        Text("Terms of Use")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+
+                // Ad Privacy Options
+                Button(action: {
+                    ConsentManager.shared.presentPrivacyOptionsIfAvailable()
+                }) {
+                    HStack {
+                        Text("Ad Privacy Options")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "hand.raised")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
             } header: {
                 Text("About")
             }
             
-            Section {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Debug Controls")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.primary)
-                    
-                    Text("Development tools for testing")
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-                
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
-                    DebugButton(title: "📊 Print Status") {
-                        purchaseManager.debugPrintStatus()
-                    }
-                    
-                    DebugButton(title: "🔄 Reset Sub") {
-                        purchaseManager.debugResetSubscription()
-                    }
-                    
-                    DebugButton(title: "🚀 Start Trial") {
-                        purchaseManager.debugStartTrial()
-                    }
-                    
-                    DebugButton(title: "⏰ Expire Trial") {
-                        purchaseManager.debugExpireTrial()
-                    }
-                    
-                    DebugButton(title: "✅ Activate Sub") {
-                        purchaseManager.debugActivateSubscription()
-                    }
-                    
-                    DebugButton(title: "🔄 Reset Onboard") {
-                        purchaseManager.debugResetOnboarding()
-                    }
-                    
-                    DebugButton(title: "🔄 Reset Welcome") {
-                        purchaseManager.debugResetWelcomeFlow()
-                    }
-                    
-                    DebugButton(title: "📊 Reset Swipes") {
-                        purchaseManager.debugResetDailySwipes()
-                    }
-                    
-                    DebugButton(title: "🎯 Add 5 Swipes") {
-                        purchaseManager.debugAddSwipes(5)
-                    }
-                    
-                    DebugButton(title: "🎯 Set 9 Swipes") {
-                        purchaseManager.debugSetSwipes(9)
-                    }
-                    
-                    DebugButton(title: "🎯 Test Limit") {
-                        purchaseManager.debugTestRewardedAd()
-                    }
-                    
-                    DebugButton(title: "🔄 Reset Progress") {
-                        resetProgress()
-                    }
-                    
-                    DebugButton(title: "🔔 Test Notification") {
-                        notificationManager.testNotification()
-                    }
-                }
-            } header: {
-                Text("Development")
-            } footer: {
-                Text("These controls are for development and testing purposes only.")
-            }
+            // Development/debug controls removed for production
         }
         .listStyle(InsetGroupedListStyle())
         .navigationTitle("Settings")
@@ -1510,7 +1515,7 @@ struct ContentView: View {
                             .font(.system(size: 32, weight: .bold))
                             .foregroundColor(.primary)
                             .onAppear {
-                                print("📊 Debug: Stats view showing totalPhotosDeleted: \(totalPhotosDeleted)")
+                                // Removed debug log
                             }
                         
                         Text("Photos Deleted")
@@ -1532,7 +1537,7 @@ struct ContentView: View {
                             .font(.system(size: 28, weight: .bold))
                             .foregroundColor(.primary)
                             .onAppear {
-                                print("📊 Debug: Stats view showing totalStorageSaved: \(totalStorageSaved) MB")
+                                // Removed debug log
                             }
                         
                         Text("Storage Saved")
@@ -1749,11 +1754,26 @@ struct ContentView: View {
                     Text("Everything you need to know about CleanSwipe")
                         .font(.system(size: 16))
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.top, 20)
                 
                 // FAQ Sections
                 VStack(spacing: 20) {
+                    // Contact & Support
+                    FAQSection(
+                        title: "Contact & Support",
+                        icon: "envelope.fill",
+                        color: .blue
+                    ) {
+                        FAQItem(
+                            question: "Report a bug or contact support",
+                            answer: "If you spot an issue or need help, email us at cleanswipereports@gmail.com. Include your iOS version and a brief description or steps to reproduce so we can help quickly."
+                        )
+                    }
+
                     // Getting Started Section
                     FAQSection(
                         title: "Getting Started",
@@ -1793,8 +1813,8 @@ struct ContentView: View {
                         )
                         
                         FAQItem(
-                            question: "Do the 10 daily swipes count across all filters?",
-                            answer: "No, the 10 daily swipes are separate for each filter. This prevents users from exploiting the system by switching between filters. Each filter tracks its own progress independently."
+                            question: "Do the 50 daily swipes count across all filters?",
+                            answer: "No, the 50 daily swipes are tracked separately for each filter. This prevents users from exploiting the system by switching between filters. Each filter tracks its own progress independently."
                         )
                         
                         FAQItem(
@@ -1811,7 +1831,7 @@ struct ContentView: View {
                     ) {
                         FAQItem(
                             question: "What's included in the free version?",
-                            answer: "The free version includes 10 swipes per day, access to all photo filters, basic stats tracking, and achievement notifications. You can also watch ads to earn bonus swipes."
+                            answer: "The free version includes 50 swipes per day, access to all photo filters, basic stats tracking, and achievement notifications. You can also watch ads to earn bonus swipes."
                         )
                         
                         FAQItem(
@@ -1924,27 +1944,17 @@ struct ContentView: View {
     }
     
     private func rateApp() {
-        // For now, show an alert with instructions
-        // In production, this would open the App Store review page
-        let alert = UIAlertController(
-            title: "Rate CleanSwipe",
-            message: "Thank you for using CleanSwipe! To rate the app:\n\n1. Open the App Store\n2. Search for 'CleanSwipe'\n3. Tap 'Write a Review'\n4. Share your experience\n\nYour feedback helps us improve and helps other users discover the app!",
-            preferredStyle: .alert
-        )
-        
-        alert.addAction(UIAlertAction(title: "Open App Store", style: .default) { _ in
-            // Open App Store to CleanSwipe page
-            if let url = URL(string: "https://apps.apple.com/app/cleanswipe/id1234567890") {
-                UIApplication.shared.open(url)
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            // Try native prompt first (system decides whether to show)
+            SKStoreReviewController.requestReview(in: scene)
+        }
+
+        // Always provide a manual fallback to the review page
+        let reviewURLString = "https://apps.apple.com/app/id\(AppConfig.appStoreID)?action=write-review"
+        if let url = URL(string: reviewURLString) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
             }
-        })
-        
-        alert.addAction(UIAlertAction(title: "Later", style: .cancel))
-        
-        // Present the alert
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let window = windowScene.windows.first {
-            window.rootViewController?.present(alert, animated: true)
         }
     }
     
@@ -1999,7 +2009,7 @@ struct ContentView: View {
                 .font(.system(size: 32, weight: .bold))
                 .foregroundColor(.primary)
             
-            Text("You've used all 10 free swipes for today. Choose an option below to continue cleaning!")
+            Text("You've used all 50 free swipes for today. Choose an option below to continue cleaning!")
                 .font(.system(size: 18))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -2007,7 +2017,7 @@ struct ContentView: View {
             VStack(spacing: 8) {
                 let filterKey = filterKey(for: selectedFilter)
                 let totalUsed = purchaseManager.filterSwipeCounts[filterKey, default: 0]
-                Text("Used today: \(totalUsed)/10")
+                Text("Used today: \(totalUsed)/\(purchaseManager.freeDailySwipesPerFilter)")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.secondary)
                 if purchaseManager.rewardedSwipesRemaining > 0 {
@@ -2194,7 +2204,8 @@ struct ContentView: View {
                     Text("Photos stored in iCloud may appear in lower quality")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 
                 Spacer()
@@ -2376,7 +2387,7 @@ struct ContentView: View {
         
         // Ensure we have a valid range - this is critical to prevent the crash
         guard startIndex < endIndex && startIndex >= 0 && endIndex <= photos.count else {
-            print("Invalid range: startIndex=\(startIndex), endIndex=\(endIndex), photos.count=\(photos.count)")
+                // Invalid range guard (silenced in production)
             isCompleted = true
             return
         }
@@ -2409,10 +2420,19 @@ struct ContentView: View {
         lastBatchDeletedCount = 0
         
         loadCurrentPhoto()
+        // Begin preheating for this new batch
+        preloadNextPhotos()
     }
     
     private func loadCurrentPhoto() {
         guard currentPhotoIndex < currentBatch.count else {
+            // If we're in the post-review → ad → continue flow, force continue screen
+            if proceedToNextBatchAfterAd || showContinueScreenAfterAd || showingAdModal || showingContinueScreen || justWatchedAd {
+                showingCheckpointScreen = false
+                showingReviewScreen = false
+                showingContinueScreen = true
+                return
+            }
             // Check if any photos are marked for deletion
             let photosToDelete = swipedPhotos.filter { $0.action == .delete }
             
@@ -2487,12 +2507,35 @@ struct ContentView: View {
                     // Check if this is a low quality image
                     if let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool, isDegraded {
                         self.isCurrentImageLowQuality = true
+                        // If currently degraded and network allowed, schedule a refetch for full quality
+                        if options.isNetworkAccessAllowed {
+                            self.refetchHighQualityIfNeeded(for: asset, lastOptions: options, targetSize: targetSize)
+                        }
                     } else {
                         self.isCurrentImageLowQuality = false
                     }
                 } else {
                     // If no image was returned, try fallback strategies
                     self.handleImageLoadFailure(for: asset, originalOptions: options, originalTargetSize: targetSize)
+                }
+            }
+        }
+    }
+
+    private func refetchHighQualityIfNeeded(for asset: PHAsset, lastOptions: PHImageRequestOptions, targetSize: CGSize) {
+        // Avoid spamming: delay slightly; Photos will usually deliver the non-degraded image soon
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let options = PHImageRequestOptions()
+            options.isSynchronous = false
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+            options.resizeMode = .exact
+            self.imageManager.requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFit, options: options) { image, info in
+                DispatchQueue.main.async {
+                    if let image = image, let isDegraded = info?[PHImageResultIsDegradedKey] as? Bool, !isDegraded {
+                        self.currentImage = image
+                        self.isCurrentImageLowQuality = false
+                    }
                 }
             }
         }
@@ -2620,7 +2663,7 @@ struct ContentView: View {
         isPreloading = true
         
         DispatchQueue.global(qos: .background).async {
-            let preloadCount = 10
+            let preloadCount = 8
             let startIndex = self.currentPhotoIndex + 1
             
             // Safety check: ensure we have a valid batch and startIndex
@@ -2641,17 +2684,26 @@ struct ContentView: View {
                 return
             }
             
-            for i in startIndex..<endIndex {
-                let asset = self.currentBatch[i]
-                
-                if asset.mediaType == .video {
-                    self.preloadVideo(for: asset)
-                } else {
-                    self.preloadImage(for: asset)
+            let assetsToPreheat = Array(self.currentBatch[startIndex..<endIndex])
+            let targetSize = self.getTargetSize(for: self.storagePreference)
+            let options = self.getImageOptions(for: self.storagePreference)
+            // Start Photos preheating for upcoming images
+            self.cachingManager.startCachingImages(
+                for: assetsToPreheat,
+                targetSize: targetSize,
+                contentMode: .aspectFit,
+                options: options
+            )
+            self.preheatedAssetIds.formUnion(assetsToPreheat.map { $0.localIdentifier })
+            
+            for asset in assetsToPreheat {
+                // Avoid video preloading to reduce memory footprint; only preload images
+                if asset.mediaType != .video {
+                    autoreleasepool {
+                        self.preloadImage(for: asset)
+                    }
                 }
-                
-                // Small delay to prevent overwhelming the system
-                Thread.sleep(forTimeInterval: 0.1)
+                Thread.sleep(forTimeInterval: 0.05)
             }
             
             DispatchQueue.main.async {
@@ -2890,6 +2942,8 @@ struct ContentView: View {
         cleanupOldPreloadedContent()
         
         loadCurrentPhoto()
+        // Keep preheating window moving forward
+        preloadNextPhotos()
         
         // Reset justWatchedAd flag after moving to next photo
         if justWatchedAd {
@@ -2900,8 +2954,8 @@ struct ContentView: View {
     }
     
     private func cleanupOldPreloadedContent() {
-        // Keep only the next 10 photos in memory
-        let maxPreloadCount = 10
+        // Keep only the next few photos in memory
+        let maxPreloadCount = 8
         
         // Remove preloaded content for photos we've already passed
         preloadedImages = preloadedImages.filter { assetId, _ in
@@ -2922,29 +2976,38 @@ struct ContentView: View {
             }
             return false
         }
+
+        // Stop Photos preheating for assets that fell out of the window
+        let visibleRange = currentPhotoIndex..<(min(currentPhotoIndex + maxPreloadCount, currentBatch.count))
+        let shouldKeepIds = Set(currentBatch[visibleRange].map { $0.localIdentifier })
+        let idsToStop = preheatedAssetIds.subtracting(shouldKeepIds)
+        if !idsToStop.isEmpty {
+            let assetsToStop = currentBatch.filter { idsToStop.contains($0.localIdentifier) }
+            let targetSize = getTargetSize(for: storagePreference)
+            let options = getImageOptions(for: storagePreference)
+            cachingManager.stopCachingImages(for: assetsToStop, targetSize: targetSize, contentMode: .aspectFit, options: options)
+            preheatedAssetIds.subtract(idsToStop)
+        }
     }
     
     private func showReviewScreen() {
-        print("🔍 Debug: showReviewScreen() called - setting showingReviewScreen = true")
-        print("🔍 Debug: swipedPhotos.count = \(swipedPhotos.count), batchSize = \(batchSize)")
         showingReviewScreen = true
-        print("🔍 Debug: showReviewScreen() - after setting showingReviewScreen = \(showingReviewScreen)")
     }
     
     // MARK: - Ad Modal Functions
     
     private func dismissAdModal() {
-        print("🔍 Debug: dismissAdModal() - START - swipedPhotos.count = \(swipedPhotos.count), showingReviewScreen = \(showingReviewScreen)")
         showingAdModal = false
         justWatchedAd = true
         // Reset drag offset to prevent overlay issues
         dragOffset = .zero
         
         // Check if we're in the middle of a batch or after review screen
-        if swipedPhotos.count >= batchSize {
-            // Ad was shown after review screen, go to continue screen
-            print("🔍 Debug: dismissAdModal() - ad shown after review screen, going to continue screen")
+        if swipedPhotos.count >= batchSize || proceedToNextBatchAfterAd || showContinueScreenAfterAd {
+            // Ad was shown after review screen, go to continue screen (even if no deletions)
             showingContinueScreen = true
+            proceedToNextBatchAfterAd = false
+            showContinueScreenAfterAd = false
         } else {
             // Ad was shown during swiping, continue to next photo
             print("🔍 Debug: dismissAdModal() - ad shown during swiping, continuing to next photo")
@@ -2971,10 +3034,11 @@ struct ContentView: View {
         dragOffset = .zero
         
         // Check if we're in the middle of a batch or after review screen
-        if swipedPhotos.count >= batchSize {
-            // Ad was shown after review screen, go to continue screen
-            print("🔍 Debug: dismissRewardedAd() - ad shown after review screen, going to continue screen")
+        if swipedPhotos.count >= batchSize || proceedToNextBatchAfterAd || showContinueScreenAfterAd {
+            // Ad was shown after review screen, go to continue screen (even if no deletions)
             showingContinueScreen = true
+            proceedToNextBatchAfterAd = false
+            showContinueScreenAfterAd = false
         } else {
             // Ad was shown during swiping, continue to next photo
             print("🔍 Debug: dismissRewardedAd() - ad shown during swiping, continuing to next photo")
@@ -3025,7 +3089,7 @@ struct ContentView: View {
         
         // Return to photo view if on review screen
         if showingReviewScreen {
-            print("🔍 Debug: undoLastPhoto() - setting showingReviewScreen = false")
+            // Debug log removed
             showingReviewScreen = false
         }
         
@@ -3100,15 +3164,16 @@ struct ContentView: View {
             // Reset loading state
             isConfirmingBatch = false
             
-            // Check if we're done with all photos
-            let nextBatchStartIndex = (batchIndex + 1) * batchSize
+            // Refresh remaining photos to exclude newly processed keeps
+            photos = filterPhotos(allPhotos)
             
-            if nextBatchStartIndex >= photos.count {
-                // All photos processed, mark as completed
+            // Check if there are any remaining unprocessed photos for this filter
+            let remaining = countPhotosForFilter(selectedFilter)
+            if remaining == 0 {
                 isCompleted = true
             } else {
-                // Go directly to next batch
-                proceedToNextBatch()
+                // Show continue screen so ad logic still applies even with zero deletions
+                showContinueScreen()
             }
             return
         }
@@ -3141,11 +3206,8 @@ struct ContentView: View {
                 
                 // Only show continue screen after successful deletion
                 await MainActor.run {
-                    // Remove deleted photos from the photos array to prevent range errors
-                    let deletedPhotoIds = Set(photosToDelete.map { $0.asset.localIdentifier })
-                    self.photos.removeAll { asset in
-                        deletedPhotoIds.contains(asset.localIdentifier)
-                    }
+                    // Recompute remaining photos after deletion to avoid index drift
+                    self.photos = self.filterPhotos(self.allPhotos)
                     
                     // Clear the swipedPhotos array since we've processed them
                     self.swipedPhotos.removeAll()
@@ -3173,20 +3235,10 @@ struct ContentView: View {
                         )
                     }
                     
-                    // Instead of resetting batchIndex to 0, calculate the correct position
-                    // We need to account for the fact that photos were removed from the array
-                    let currentPosition = self.batchIndex * self.batchSize
-                    
-                    // Adjust batchIndex to maintain our position in the modified array
-                    // Since we removed some photos, we might need to adjust our position
-                    if currentPosition >= self.photos.count {
-                        // If our current position is beyond the array, we're done
+                    // If no photos remain for this filter, mark as completed
+                    if self.countPhotosForFilter(self.selectedFilter) == 0 {
                         self.isCompleted = true
                         return
-                    } else {
-                        // Continue from the same logical position
-                        // The batchIndex should remain the same since we're continuing
-                        // from where we left off in the photo stream
                     }
                     
                     self.showContinueScreen()
@@ -3216,6 +3268,8 @@ struct ContentView: View {
             
             // Reset loading state
             self.isConfirmingBatch = false
+            // Ensure checkpoint screen does not override continue screen
+            self.showingCheckpointScreen = false
             
             // Check if we're done with all photos
             let nextBatchStartIndex = (self.batchIndex + 1) * self.batchSize
@@ -3231,6 +3285,9 @@ struct ContentView: View {
             // Show ad after review screen for non-subscribers
             if self.purchaseManager.shouldShowAd() {
                 print("🔍 Debug: showContinueScreen() - showing ad after review screen")
+                // Ensure we still go to continue screen after interstitial, even if no deletions
+                self.proceedToNextBatchAfterAd = true
+                self.showContinueScreenAfterAd = true
                 self.justWatchedAd = true // Set flag to prevent paywall after ad
                 self.showAdModal()
             } else {
@@ -3773,7 +3830,9 @@ struct ContentView: View {
         if let image = currentImage {
             print("Sharing image with size: \(image.size)")
             itemToShare = image
-            showingShareSheet = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                showingShareSheet = true
+            }
         } else if let asset = currentAsset, asset.mediaType == .video {
             // For videos, we need to export the video file
             shareVideo(asset: asset)
@@ -3795,7 +3854,9 @@ struct ContentView: View {
                 if let avAsset = avAsset as? AVURLAsset {
                     // We have direct access to the original file URL - share it directly!
                     self.itemToShare = avAsset.url
-                    self.showingShareSheet = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        self.showingShareSheet = true
+                    }
                 } else if let avAsset = avAsset {
                     // Fallback to export method if direct URL access isn't available
                     self.exportVideoToFile(avAsset: avAsset)
@@ -3845,7 +3906,9 @@ struct ContentView: View {
                 case .completed:
                     // Share the exported video file
                     self.itemToShare = tempVideoURL
-                    self.showingShareSheet = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        self.showingShareSheet = true
+                    }
                     
                     // Clean up the temporary file after sharing
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -3919,19 +3982,27 @@ struct ContentView: View {
         // Preload the next batch in the background
         DispatchQueue.global(qos: .background).async {
             for (index, asset) in nextBatchAssets.enumerated() {
-                // Only preload first few photos to avoid memory issues
+                // Only preload first few images (no videos) to avoid memory issues
                 guard index < 5 else { break }
-                
-                if asset.mediaType == .video {
-                    self.preloadVideo(for: asset)
-                } else {
-                    self.preloadImage(for: asset)
+                if asset.mediaType != .video {
+                    autoreleasepool {
+                        self.preloadImage(for: asset)
+                    }
                 }
                 
                 // Small delay to prevent overwhelming the system
                 Thread.sleep(forTimeInterval: 0.1)
             }
         }
+    }
+
+    private func stopAllPreheating() {
+        guard !preheatedAssetIds.isEmpty else { return }
+        let assets = currentBatch.filter { preheatedAssetIds.contains($0.localIdentifier) }
+        let targetSize = getTargetSize(for: storagePreference)
+        let options = getImageOptions(for: storagePreference)
+        cachingManager.stopCachingImages(for: assets, targetSize: targetSize, contentMode: .aspectFit, options: options)
+        preheatedAssetIds.removeAll()
     }
     
     // Note: Tutorial overlay moved to Components/TutorialOverlay.swift
@@ -3978,6 +4049,17 @@ struct ContentView: View {
     }
 }
 
+// iOS 15 compatibility shim for scrollContentBackground(.hidden)
+private struct ScrollContentBackgroundHidden: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollContentBackground(.hidden)
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - Supporting Types and Views
 
 // Note: PhotoFilter moved to Models/PhotoModels.swift
@@ -3993,6 +4075,8 @@ struct ContentView: View {
 // MARK: - Ad Modal View
 struct AdModalView: View {
     let onDismiss: () -> Void
+    let onShowPaywall: () -> Void
+    @EnvironmentObject var purchaseManager: PurchaseManager
     @State private var showingAd = false
     @State private var isLoadingAd = false
     @State private var isAdReady = false
@@ -4080,6 +4164,17 @@ struct AdModalView: View {
                     }
                 }
                 
+                // Join Premium / Remove Adverts -> show paywall
+                Button(action: onShowPaywall) {
+                    Text("Remove Adverts")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+
                 if !isAdReady {
                     Button(action: retryLoadAd) {
                         Text("Retry")
@@ -4103,6 +4198,11 @@ struct AdModalView: View {
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             updateAdStatus()
+        }
+        .onChange(of: purchaseManager.purchaseState) { state in
+            if state == .success {
+                onDismiss()
+            }
         }
     }
     
@@ -4135,6 +4235,8 @@ struct AdModalView: View {
 // MARK: - Rewarded Ad Modal View
 struct RewardedAdModalView: View {
     let onDismiss: () -> Void
+    let onShowPaywall: () -> Void
+    @EnvironmentObject var purchaseManager: PurchaseManager
     @State private var rewardEarned = false
     @State private var isLoadingAd = false
     @State private var isAdReady = false
@@ -4260,6 +4362,17 @@ struct RewardedAdModalView: View {
                     }
                 }
                 
+                // Join Premium / Remove Adverts -> show paywall
+                Button(action: onShowPaywall) {
+                    Text("Join Premium")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+
                 if !isAdReady {
                     Button(action: retryLoadRewardedAd) {
                         Text("Retry")
@@ -4283,6 +4396,11 @@ struct RewardedAdModalView: View {
         }
         .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
             updateAdStatus()
+        }
+        .onChange(of: purchaseManager.purchaseState) { state in
+            if state == .success {
+                onDismiss()
+            }
         }
     }
     
@@ -4382,7 +4500,7 @@ enum StoragePreference: String, CaseIterable {
         case .storageOptimized:
             return .opportunistic
         case .balanced:
-            return .fastFormat
+            return .opportunistic
         case .highQuality:
             return .highQualityFormat
         }
@@ -4404,7 +4522,7 @@ enum StoragePreference: String, CaseIterable {
         case .storageOptimized:
             return false
         case .balanced:
-            return false
+            return true
         case .highQuality:
             return true
         }
@@ -4415,7 +4533,7 @@ enum StoragePreference: String, CaseIterable {
         case .storageOptimized:
             return 2.0
         case .balanced:
-            return 3.0
+            return UIScreen.main.scale
         case .highQuality:
             return UIScreen.main.scale
         }

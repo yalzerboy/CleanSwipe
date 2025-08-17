@@ -4,5 +4,7 @@
 <dict>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-4682463617947690~4306443417</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>CleanSwipe requires access to your photo library to let you review and organize photos.</string>
 </dict>
 </plist>

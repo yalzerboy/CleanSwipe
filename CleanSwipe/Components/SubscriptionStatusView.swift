@@ -8,6 +8,7 @@ struct SubscriptionStatusView: View {
     
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var paywallTrigger = 0
     
     var body: some View {
         ZStack {
@@ -27,12 +28,16 @@ struct SubscriptionStatusView: View {
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
                     
                     // Status description
                     Text(statusDescription)
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(.white.opacity(0.9))
                         .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 40)
                 }
                 
@@ -50,10 +55,9 @@ struct SubscriptionStatusView: View {
                 
                 // Action buttons
                 VStack(spacing: 16) {
-                    // Upgrade to Premium button
+                    // Upgrade to Premium button -> show RevenueCat paywall
                     Button(action: {
-                        // The paywall will be triggered automatically by presentPaywallIfNeeded
-                        // when the Premium entitlement is missing
+                        paywallTrigger += 1
                     }) {
                         Text(primaryButtonText)
                             .font(.system(size: 18, weight: .bold))
@@ -83,14 +87,11 @@ struct SubscriptionStatusView: View {
                 .padding(.bottom, 50)
             }
         }
+        .id(paywallTrigger)
         .presentPaywallIfNeeded(
             requiredEntitlementIdentifier: "Premium",
-            purchaseCompleted: { customerInfo in
-                onDismiss()
-            },
-            restoreCompleted: { customerInfo in
-                onDismiss()
-            }
+            purchaseCompleted: { _ in onDismiss() },
+            restoreCompleted: { _ in onDismiss() }
         )
         .alert("Purchase Status", isPresented: $showingAlert) {
             Button("OK") {}
@@ -135,7 +136,7 @@ struct SubscriptionStatusView: View {
     private var statusDescription: String {
         switch purchaseManager.subscriptionStatus {
         case .expired:
-            return "Your 3-day free trial has ended. Continue with premium features for just £1/week."
+            return "Your free trial has ended. Continue with premium features."
         case .cancelled:
             return "Your subscription was cancelled. Reactivate to continue enjoying premium features."
         default:
