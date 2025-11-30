@@ -1,0 +1,90 @@
+# Xcode
+.DS_Store
+*.swp
+*.lock
+*.tmp
+*.temp
+*.o
+*.lo
+*.la
+*.al
+.libs/
+*.log
+*.cache
+*.so
+*.dylib
+
+# Xcode build artifacts
+build/
+DerivedData/
+*.xcscmblueprint
+*.xccheckout
+
+# Xcode user data
+*.xcuserstate
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+
+# CocoaPods
+Pods/
+
+# Carthage
+Carthage/
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Firebase
+GoogleService-Info.plist
+
+# RevenueCat/Firebase Analytics setup files
+FIREBASE_ANALYTICS_SETUP.md
+REVENUECAT_SETUP.md
+REVENUECAT_SETUP_VERIFICATION.md
+REVENUECAT_ATTRIBUTES_AND_PLACEMENTS.md
+
+# Documentation files that shouldn't be in version control
+*.md
+!README.md
+
+# Logs
+*.log
+
+# Temporary directories that may be created
+.derivedDataTemp/
+.temp/
+
+
+
+

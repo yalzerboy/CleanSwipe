@@ -1,0 +1,12 @@
+✅ All known bugs have been fixed!
+
+Recent fixes:
+- Deletion confirmation stuck on "Processing..." - FIXED (resets isConfirmingBatch after deletion)
+- Swipe counter showing wrong values (50/99 instead of 51/100) - FIXED (added totalRewardedSwipesGranted tracking)
+- Videos showing photos on initial app load - FIXED (removed UserDefaults persistence, added .id() modifier)
+- Watch ad button not presenting ad immediately - FIXED (shows ad from topmost view controller)
+- Deletion flow showing "no photos for deletion" after confirm - FIXED (hides review screen immediately, preserves swipedPhotos on cancel)
+- Screen showing after iOS deletion modal confirm - FIXED (uses proceedToNextBatchDirectly with no delays)
+- First photo of new batch flashing wrong photo - FIXED (shows loading spinner during transition)
+- Memory usage optimized (reduced image multipliers, improved cleanup)
+- Preload logic improved (maintains consistent 5-photo buffer across batch boundaries)

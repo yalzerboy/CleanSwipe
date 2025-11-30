@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>GADApplicationIdentifier</key>
+	<string>ca-app-pub-4682463617947690~4306443417</string>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemIconType</key>
+			<string>UIApplicationShortcutIconTypeLove</string>
+			<key>UIApplicationShortcutItemSubtitle</key>
+			<string>Leave feedback for free premium access</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>Thinking of leaving?</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.yalun.CleanSwipe.leaveFeedback</string>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1,50 +1,14 @@
-CleanSwipe
 
-## ✅ COMPLETED TASKS
-- ✅ Photo access handling: App now properly shows the "first things first" screen (WelcomeFlowView) when users don't have photo access, both on app launch and when they try to use SwipeWipe. The app also detects when photo access is revoked while using the app and redirects users back to the welcome flow.
+TODO LIST
 
-## TODO TASKS
-- ✅ On this Day filter: Added a new filter option that shows photos from the same day and month but not from the current year. This option appears above the year filters in the filter selection menu.
-- ✅ Share button fix: Fixed the share button to properly show the iOS share popup instead of a white page. The ShareSheet now includes proper configuration and presentation detents.
-- ✅ Daily reminder notifications: Implemented a comprehensive notification system that sends creative, engaging daily reminders at 11 AM local time. Features include random creative messages, interactive notification actions (View On This Day, Start Swiping, Remind Later), achievement notifications for successful photo deletions, and proper integration with the app's permission flow.
+- onboarding flow 3 minutes+ (do some research on this)
 
-- ✅ Content type settings: Implemented settings to let users choose between photos, videos, or both. Settings also show premium status with upgrade button for non-subscribers.
-- ✅ All done screen improvements: Fixed the "all done" screen to show "You've reviewed all your photos in this category" and added a "Change Filter" button. Fixed the logic to distinguish between completed categories (show "all done") vs empty categories (show "no photos found"). Fixed the counting issue where completed categories showed incorrect counts like "1 processed out of 0".
-- ✅ Achievement system improvements: Updated achievement notifications to trigger only at meaningful milestones (1st, 10th, 50th, 100th, 250th, 500th, 1000th, 2500th, 5000th, 10000th photo deleted) instead of every deletion. Added persistent tracking of total photos deleted across app sessions.
+- revenue cat paywall improvements (research)
 
-- ✅ Screenshots filter: Added a new filter option that shows photos from the screenshots folder. The filter appears above the year filters in the filter selection menu and uses the native iOS screenshot detection via `mediaSubtypes.contains(.photoScreenshot)`.
+- push premium more
 
-- ✅ Subscribe button in menu: Added a prominent "Upgrade to Pro" button at the top of the filter menu for non-pro users (not subscribed or expired). The button uses a crown icon and clear call-to-action text to encourage upgrades.
+- check notifications and full flow
 
-- ✅ My Stats page: Added a beautiful stats page accessible from the menu that shows total photos deleted, storage saved, and a visual calendar-style swipe streak with baby blue filled squares for days with swipes. Includes achievement system with unlockable milestones and persistent data tracking across app sessions.
+- investigate paid ads
 
-- ✅ FAQ & Help section: Added a comprehensive FAQ page accessible from the menu with 5 organized sections (Getting Started, Photo Filters, Premium Features, Technical Support, Privacy & Data). Includes user-friendly questions and answers specific to CleanSwipe's functionality, safety features, and premium benefits.
-
-- ✅ Rate Us option: Added a "Rate CleanSwipe" button in the menu that shows an alert with instructions for rating the app. Currently uses a placeholder App Store URL that can be updated once the app is live. Includes clear steps for users to follow and emphasizes the importance of reviews for app discovery.
-
-- ✅ Filter-specific swipe limits: Fixed the exploit where users could switch between filters to exceed the 50 daily swipe limit. Now each filter (Random, On This Day, Screenshots, Year filters) has its own independent 50‑swipe limit per day, preventing users from getting more than 50 swipes total by switching filters.
-
-- ✅ Onboarding skip buttons: Made the photo count and cleaning frequency questions in the onboarding flow skippable by adding "Skip" buttons to both PhotoCountView and CleaningFrequencyView, allowing users to proceed without answering these optional questions.
-
-- ✅ Content type text updates: Updated all "photos processed" text throughout the app to dynamically reflect the user's content type selection. Now shows "photos processed", "videos processed", or "photos and videos processed" based on the selected content type in settings. This affects the progress bar, completion screens, and menu filter counts.
-
-- ✅ Video sharing fix: Fixed the share button to properly work with videos by implementing proper video asset handling. Now users can share videos just like photos, with the ShareSheet supporting both image and video content types.
-
-- ✅ Onboarding content type persistence: Fixed the issue where the content type selected during onboarding (photos/videos/photos & videos) wasn't being properly applied to the app settings. Added a callback mechanism to ensure content type changes in settings are properly saved to UserDefaults and reflected throughout the app.
-
-- ✅ Video autoplay and sharing fixes: Fixed video autoplay issues by improving VideoPlayer configuration with proper seek-to-zero, play commands, and onDisappear handling. Fixed video sharing by implementing proper video export to temporary file URLs instead of sharing AVAsset directly, which was causing the "New Quick Note" issue. Added comprehensive cleanup of temporary video files to prevent storage accumulation. Enhanced video autoplay with multiple playback attempts and improved video loading options to ensure videos start playing immediately.
-
-- ✅ App ID and capabilities setup: Configured App ID with required capabilities including Push Notifications, In-App Purchase, and proper Info.plist entries. Added notification usage description and encryption compliance settings. Project builds successfully with all required permissions.
-
-- how do apps edit the actions when they hold the app down and there are options e.g. delete app etc. i want to add a retention action item that tries to 
-stop the user from deleting.
-
-^^ after the above + some optimisations from below, we are ready to launch!
-- in app purchases
-- app store review requirements
-- logos
-- onboarding flow + media
-- ✅ AdMob integration: Implemented comprehensive AdMob integration to replace placeholder advertisements. Created AdMobManager for handling interstitial ads, rewarded ads, and banner ads. Updated AdModalView and RewardedAdModalView to use real AdMob implementations with proper loading states, error handling, and retry mechanisms. Added AdMob configuration to project settings. Ready for production with test ad unit IDs (see ADMOB_SETUP.md for next steps).
-
-Cleanup:
-- Are there any must-do, max value optimisations or improvements i should make before releasing v1? only absolute necessities please. 
+- is there a way to notify users of the new version to update?
