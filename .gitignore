@@ -81,6 +81,8 @@ REVENUECAT_ATTRIBUTES_AND_PLACEMENTS.md
 
 # Logs
 *.log
+build_log*.txt
+build_output*.txt
 
 # Temporary directories that may be created
 .derivedDataTemp/
