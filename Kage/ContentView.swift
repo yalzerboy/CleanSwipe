@@ -28,7 +28,7 @@ private class GeocodingManager {
     private let maxGeocodingRequestsPerMinute = 45 // Stay under 50 to avoid throttling
     private let geocodingWindowSeconds: TimeInterval = 60
     private let maxCacheSize = 1000 // Limit cache size to prevent memory issues
-
+    
     // Helper to create a cache key from location coordinates
     private func locationCacheKey(for location: CLLocation) -> String {
         // Round to ~100m precision to cache nearby locations together
@@ -169,21 +169,25 @@ struct ContentView: View {
     @Binding var showTutorial: Bool
     let onPhotoAccessLost: (() -> Void)?
     let onContentTypeChange: ((ContentType) -> Void)?
+    let onDismiss: (() -> Void)?  // Direct callback to parent for guaranteed dismissal
     let initialFilterOverride: PhotoFilter?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) var colorScheme
     private let swipePersistenceQueue = DispatchQueue(label: "com.cleanswipe.swipePersistence", qos: .utility)
     
-    init(contentType: ContentType, showTutorial: Binding<Bool>, initialFilter: PhotoFilter? = nil, onPhotoAccessLost: (() -> Void)? = nil, onContentTypeChange: ((ContentType) -> Void)? = nil) {
+    init(contentType: ContentType, showTutorial: Binding<Bool>, initialFilter: PhotoFilter? = nil, onPhotoAccessLost: (() -> Void)? = nil, onContentTypeChange: ((ContentType) -> Void)? = nil, onDismiss: (() -> Void)? = nil) {
         self.contentType = contentType
         self._showTutorial = showTutorial
         self.onPhotoAccessLost = onPhotoAccessLost
         self.onContentTypeChange = onContentTypeChange
+        self.onDismiss = onDismiss
         self.initialFilterOverride = initialFilter
         self._selectedContentType = State(initialValue: contentType)
     }
     
     @EnvironmentObject var notificationManager: NotificationManager
     @EnvironmentObject var streakManager: StreakManager
+    @EnvironmentObject var happinessEngine: HappinessEngine
     @State private var photos: [PHAsset] = []
     @State private var currentBatch: [PHAsset] = []
     @State private var currentPhotoIndex = 0
@@ -203,6 +207,7 @@ struct ContentView: View {
     @State private var currentPhotoLocation: String?
     @State private var isLoading = true
     @State private var showingPermissionAlert = false
+    @State private var isCurrentPhotoFavorite = false // Track favorite status locally
     @State private var dragOffset = CGSize.zero
     @GestureState private var dragTranslation = CGSize.zero
     @State private var isCompleted = false
@@ -210,6 +215,7 @@ struct ContentView: View {
     @State private var showingReviewScreen = false
     @State private var showingContinueScreen = false
     @State private var showingCheckpointScreen = false
+    @State private var expandedPhotoAsset: PHAsset? = nil
     @State private var isRefreshing = false
     @State private var isUndoing = false
     @State private var photoTransitionScale: CGFloat = 1.0
@@ -242,7 +248,8 @@ struct ContentView: View {
     @State private var showingDailyLimitScreen = false
     @State private var hasGrantedReward = false
     @State private var lastPaywallSwipeMilestone = 0
-    @State private var lastAppOpenPaywallDate: Date?
+    @AppStorage("lastAppOpenPaywallTime") private var lastAppOpenPaywallTime: Double = 0
+    @State private var hasAppliedInitialFilter = false  // Track if initial filter override has been applied
     
     // Tutorial overlay states - moved to TutorialOverlay component
     
@@ -312,7 +319,7 @@ struct ContentView: View {
     
     // Track total photos deleted for achievements
     @State private var totalPhotosDeleted = 0
-
+    
     // Stats tracking
     @State private var totalStorageSaved: Double = 0.0
     @State private var swipeDays: Set<String> = []
@@ -345,6 +352,7 @@ struct ContentView: View {
     
     // Storage management
     @AppStorage("storagePreference") private var storagePreferenceRaw: String = StoragePreference.highQuality.rawValue
+    @AppStorage("screenshotSortOrder") private var screenshotSortOrder: String = ScreenshotSortOrder.random.rawValue
     private var storagePreference: StoragePreference {
         get { StoragePreference(rawValue: storagePreferenceRaw) ?? .highQuality }
         nonmutating set { storagePreferenceRaw = newValue.rawValue }
@@ -369,18 +377,18 @@ struct ContentView: View {
     @State private var videoLoadTimeouts: [String: DispatchWorkItem] = [:]
     @State private var showSkipButton = false  // Shows after 3 seconds of loading
     @State private var skipButtonTimer: DispatchWorkItem? = nil
-
+    
     private let taskQueue = DispatchQueue(label: "com.cleanswipe.ContentView.taskQueue", qos: .utility)
     private let preloadQueue = DispatchQueue(label: "com.cleanswipe.ContentView.preloadQueue", qos: .userInitiated)
     
     let imageManager = PHImageManager.default()
     let cachingManager = PHCachingImageManager()
-    let batchSize = 10
+    let batchSize = 15
     private let metadataQueue = DispatchQueue(label: "com.cleanswipe.metadata", qos: .utility)
     
     // Rate-limited geocoding system - use a class-based manager
     private let geocodingManager = GeocodingManager()
-
+    
     // Helper to create a cache key from location coordinates
     private func locationCacheKey(for location: CLLocation) -> String {
         // Round to ~100m precision to cache nearby locations together
@@ -389,7 +397,7 @@ struct ContentView: View {
         let lon = String(format: "%.3f", location.coordinate.longitude)
         return "\(lat),\(lon)"
     }
-
+    
     // Rate-limited reverse geocoding
     private func reverseGeocodeLocation(_ location: CLLocation, completion: @escaping (String?) -> Void) {
         geocodingManager.reverseGeocodeLocation(location) { description in
@@ -485,11 +493,12 @@ struct ContentView: View {
     private let swipedPhotosKey = "swipedPhotosCurrentBatch"
     
     var body: some View {
-        // CRITICAL: Set filter IMMEDIATELY if override provided
+        // Apply initial filter override ONLY ONCE (not on every body evaluation)
         let _ = {
-            if let override = initialFilterOverride, selectedFilter != override {
+            if let override = initialFilterOverride, !hasAppliedInitialFilter {
                 DispatchQueue.main.async {
                     self.selectedFilter = override
+                    self.hasAppliedInitialFilter = true
                 }
             }
         }()
@@ -516,27 +525,27 @@ struct ContentView: View {
     @ViewBuilder
     private var mainContentView: some View {
         let content = Group {
-            if isCompleted {
-                completedView
+        if isCompleted {
+            completedView
             } else if isLoading || isActivatingTikTokMode || isFilteringShortVideos || isLoadingFirstVideo {
-                loadingView
-            } else if photos.isEmpty && isCategoryCompleted {
-                completedView
-            } else if photos.isEmpty {
-                noPhotosView
-            } else if showingDailyLimitScreen {
-                dailyLimitReachedView
-            } else if showingCheckpointScreen {
-                checkpointScreen
-            } else if showingContinueScreen {
-                continueScreen
-            } else if showingReviewScreen {
-                reviewScreen
-            } else {
-                photoView
-            }
+            loadingView
+        } else if photos.isEmpty && isCategoryCompleted {
+            completedView
+        } else if photos.isEmpty {
+            noPhotosView
+        } else if showingDailyLimitScreen {
+            dailyLimitReachedView
+        } else if showingCheckpointScreen {
+            checkpointScreen
+        } else if showingContinueScreen {
+            continueScreen
+        } else if showingReviewScreen {
+            reviewScreen
+        } else {
+            photoView
         }
-
+    }
+    
         ZStack {
             content
 
@@ -664,6 +673,19 @@ struct ContentView: View {
                 .cornerRadius(16)
             }
         }
+        
+        // Review Request Overlay
+        if happinessEngine.showCustomPrompt {
+            ReviewRequestView(
+                isPresented: $happinessEngine.showCustomPrompt,
+                onReview: {
+                    happinessEngine.completeReviewProcess(userAgreed: true)
+                },
+                onDismiss: {
+                    happinessEngine.completeReviewProcess(userAgreed: false)
+                }
+            )
+        }
     }
     
     @ViewBuilder
@@ -681,23 +703,96 @@ struct ContentView: View {
 
     private var contentRoot: some View {
         ZStack {
-        Color(.systemBackground)
+        if colorScheme == .dark {
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(white: 0.15), // Dark grey
+                    Color.black
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
             .ignoresSafeArea()
+        } else {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+        }
             
             mainContentView
             overlayContent
+            
         }
     }
 
 
 
+    /// Immediately dismisses ContentView and returns to home screen - NO EXCEPTIONS
+    /// This is the primary dismissal method that guarantees returning to home
+    private func performImmediateDismissal() {
+        
+        // STEP 1: Set dismissing flag FIRST to block any new operations
+        isViewDismissing = true
+        
+        // STEP 2: DISMISS IMMEDIATELY - before any cleanup to ensure instant response
+        // Use direct callback if available (most reliable), otherwise use environment dismiss
+        if let onDismiss = onDismiss {
+            // Direct callback to parent - bypasses any SwiftUI quirks
+            onDismiss()
+        } else {
+            // Fallback to environment dismiss
+            dismiss()
+        }
+        
+        // STEP 3: Quick pause of current video (non-blocking, prevents audio continuing)
+        if let player = currentVideoPlayer {
+            player.pause()
+            player.volume = 0.0
+            player.isMuted = true
+        }
+        
+        // STEP 4: Clear modal states (these are quick state changes)
+        showingReviewScreen = false
+        showingContinueScreen = false
+        showingCheckpointScreen = false
+        showingDailyLimitScreen = false
+        showingPaywall = false
+        showingSubscriptionStatus = false
+        showingShareSheet = false
+        showingSmartAICleanup = false
+        showingSmartAIPaywall = false
+        showingMailComposer = false
+        showingAdModal = false
+        showingRewardedAd = false
+        
+        // STEP 5: Clear loading states
+        isActivatingTikTokMode = false
+        isFilteringShortVideos = false
+        isLoadingFirstVideo = false
+        isPreloadingBatch = false
+        
+        // STEP 6: Do heavy cleanup ASYNCHRONOUSLY after dismiss has been triggered
+        // This prevents any blocking from delaying the UI transition
+        DispatchQueue.main.async { [self] in
+            
+            // Cancel all async operations
+            cancelAllOperations()
+            
+            // Clear batch to prevent any callbacks from starting new playback
+            currentBatch.removeAll()
+            
+            // Full video cleanup
+            stopAllVideoPlayback()
+            cleanupCurrentVideoPlayer()
+            preloadedVideoAssets.removeAll()
+            
+        }
+        
+    }
+    
     private func cancelAllOperations() {
-        print("🔙 [Back Button] Cancelling all ongoing operations")
-
         // Cancel video loading timeouts
         for (assetId, timeout) in videoLoadTimeouts {
             timeout.cancel()
-            print("🔙 [Back Button] Cancelled timeout for asset \(assetId)")
         }
         videoLoadTimeouts.removeAll()
 
@@ -723,79 +818,7 @@ struct ContentView: View {
     private func navigationToolbar() -> some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
             Button(action: {
-                // CRITICAL FIX: Always allow back button to work, even if dismissing
-                // Don't block on isDismissing flag as it can get stuck in complex states
-
-                // IMMEDIATELY set dismissing flag to prevent any new video playback
-                // This must be FIRST to stop any async callbacks from creating new players
-                isViewDismissing = true
-                print("🔙 [Back Button] Back button pressed - isViewDismissing=true")
-
-                // Force immediate dismissal regardless of current state
-                print("🔙 [Back Button] Current state: currentVideoPlayer exists=\(self.currentVideoPlayer != nil), preloadedVideoAssets count=\(self.preloadedVideoAssets.count)")
-
-                // Cancel any ongoing operations that might block dismissal
-                cancelAllOperations()
-
-                // Clear all modal and loading states immediately
-                showingReviewScreen = false
-                showingContinueScreen = false
-                showingCheckpointScreen = false
-                showingDailyLimitScreen = false
-                showingPaywall = false
-                showingSubscriptionStatus = false
-                showingShareSheet = false
-                showingSmartAICleanup = false
-                showingSmartAIPaywall = false
-                showingMailComposer = false
-                showingAdModal = false
-                showingRewardedAd = false
-
-                // Clear TikTok-specific loading states that might block dismissal
-                isActivatingTikTokMode = false
-                isFilteringShortVideos = false
-                isLoadingFirstVideo = false
-                isPreloadingBatch = false
-
-                // CRITICAL: Clear currentBatch to prevent isAssetCurrentlyDisplayed() from returning true
-                // This stops any pending async callbacks from creating new players
-                currentBatch.removeAll()
-
-                // EMERGENCY: Stop ALL video playback immediately before dismissing
-                print("🔙 [Back Button] Stopping all video playback before navigation")
-                stopAllVideoPlayback()
-                
-                // Cleanup all video players
-                cleanupCurrentVideoPlayer()
-                
-                // Also force cleanup of any remaining video assets
-                preloadedVideoAssets.removeAll()
-
-                // Force dismiss - this should always work
-                dismiss()
-
-                // Additional safety: Stop again after a brief delay in case anything started
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.stopAllVideoPlayback()
-                }
-
-                // Fallback: If dismiss() doesn't work, force reset to home state
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    // Check if we're still in the view (dismiss didn't work)
-                    // If so, force reset to default filter state
-                    if self.selectedFilter != .random {
-                        print("🔙 [Back Button] Dismiss may have failed, forcing state reset")
-                        self.selectedFilter = .random
-                        self.resetAndReload()
-                    }
-                }
-
-                // Save progress in background after dismissal starts
-                // Use a slightly longer delay to ensure dismissal completes first
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.saveSwipedPhotos()
-                    self.savePersistedData()
-                }
+                performImmediateDismissal()
             }) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .medium))
@@ -855,15 +878,15 @@ struct ContentView: View {
                 
                 let startTime = Date()
 
-                setupPhotoLibraryObserver()
-                loadPersistedData()
-
-                requestPhotoAccess()
-
-                Task {
-                    await purchaseManager.checkSubscriptionStatus()
-                    await MainActor.run {
-                        guard purchaseManager.isConfigured else { return }
+            setupPhotoLibraryObserver()
+            loadPersistedData()
+            
+            requestPhotoAccess()
+            
+            Task {
+                await purchaseManager.checkSubscriptionStatus()
+                await MainActor.run {
+                    guard purchaseManager.isConfigured else { return }
                         // REMOVED: Initial paywall on category open
                         // The paywall was showing every time a category was opened, which is too aggressive.
                         // We already show the paywall every X swipes via evaluateSwipeMilestonePaywallIfNeeded(),
@@ -871,21 +894,20 @@ struct ContentView: View {
 
                         let endTime = Date()
                         let launchDuration = endTime.timeIntervalSince(startTime)
-                    }
                 }
-                
-                if swipedPhotos.count >= batchSize {
-                    showReviewScreen()
-                }
-                
-                if swipedPhotos.isEmpty && !showingReviewScreen {
-                    restoreSwipedPhotos()
-                }
-                
-                lastPaywallSwipeMilestone = totalSwipesUsed() / 30
             }
+            
+            if swipedPhotos.count >= batchSize {
+                showReviewScreen()
+            }
+            
+            if swipedPhotos.isEmpty && !showingReviewScreen {
+                restoreSwipedPhotos()
+            }
+            
+            lastPaywallSwipeMilestone = totalSwipesUsed() / 30
+        }
         .onDisappear {
-            print("👁️ [ContentView] onDisappear triggered - cleaning up all content")
             cleanupAllPreloadedContent()
         }
         )
@@ -903,7 +925,7 @@ struct ContentView: View {
         })
         
         modified = AnyView(modified.sheet(isPresented: $showingSmartAICleanup) {
-            SmartAICleanupView(onDeletion: { deletedCount in
+            SmartAICleanupView(onDeletion: { deletedCount, _, _ in
                 if deletedCount > 0 {
                     refreshPhotos()
                 }
@@ -973,12 +995,10 @@ struct ContentView: View {
         })
 
         modified = AnyView(modified.onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-            print("📱 [ContentView] App entering background - stopping all video playback")
             stopAllVideoPlayback()
         })
 
         modified = AnyView(modified.onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            print("📱 [ContentView] App resigning active - stopping all video playback")
             stopAllVideoPlayback()
         })
         
@@ -1043,7 +1063,7 @@ struct ContentView: View {
         modified = AnyView(modified.onReceive(NotificationCenter.default.publisher(for: .openShuffleFilter)) { _ in
             isOpeningCategory = true
             protectedSwipesRemaining = 10 // Protect first 5 swipes after opening category
-            selectedFilter = .random
+                selectedFilter = .random
             resetAndReload()
             // Reset the flag after a short delay to allow normal paywall logic to resume
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -1074,33 +1094,26 @@ struct ContentView: View {
         })
         
         modified = AnyView(modified.onReceive(NotificationCenter.default.publisher(for: .openShortVideosFilter)) { _ in
-            print("🎬 [TikTok Mode] START - Notification received at \(Date())")
-            let tikTokStart = Date()
+            // let tikTokStart = Date() // Removed unused variable
 
-            print("🎬 [TikTok Mode] Creating transaction")
             // Batch state updates to prevent ViewSizePreferenceKey warnings
             var transaction = Transaction()
             transaction.disablesAnimations = true
 
-            print("🎬 [TikTok Mode] Applying transaction - setting isActivatingTikTokMode=true, selectedFilter=.shortVideos")
             withTransaction(transaction) {
                 self.isOpeningCategory = true
                 self.protectedSwipesRemaining = 10 // Protect first 10 swipes for TikTok (takes longer to load)
                 self.isActivatingTikTokMode = true
-                selectedFilter = .shortVideos
+            selectedFilter = .shortVideos
                 // Initialize progress
                 self.tikTokLoadingProgress = 0.0
                 self.tikTokLoadingMessage = "Loading TikTok mode..."
             }
-            print("🎬 [TikTok Mode] Transaction applied - State updated")
 
-            print("🎬 [TikTok Mode] Calling resetAndReload()")
             self.resetAndReload()
-            print("🎬 [TikTok Mode] resetAndReload() returned")
 
             // Keep loading state until filtering completes (don't clear isActivatingTikTokMode yet)
             // The isFilteringShortVideos state will handle the loading UI
-            print("🎬 [TikTok Mode] Keeping isActivatingTikTokMode=true until filtering completes")
         })
         
         modified = AnyView(modified.onReceive(NotificationCenter.default.publisher(for: .deepLinkOpenYear)) { notification in
@@ -1357,53 +1370,24 @@ struct ContentView: View {
                             player.volume = 0.0
                             player.isMuted = true
                             player.rate = 0.0
-                            }
+                        }
                             // Note: Don't pause current player here - onDisappear fires frequently during re-renders
                         }
                         // Note: onChange removed - video view should only display, not manage playback
                     } else {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.gray.opacity(0.3))
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color.gray.opacity(0.3))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             
-                            // Loading indicator with skip button
-                            VStack(spacing: 16) {
-                                    ProgressView()
-                                        .scaleEffect(1.5)
-                                
-                                Text(videoLoadFailed ? "Failed to load" : "Loading video...")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                
-                                // Show skip button after 3 seconds or if failed
-                                if showSkipButton || videoLoadFailed {
-                                    Button {
-                                        skipToNextPhoto()
-                                    } label: {
-                                            HStack(spacing: 6) {
-                                            Text(videoLoadFailed ? "Failed" : "Taking too long?")
-                                                .font(.system(size: 13, weight: .regular))
-                                            Text("Skip")
-                                                .font(.system(size: 13, weight: .semibold))
-                                                Image(systemName: "forward.fill")
-                                                .font(.system(size: 11, weight: .medium))
-                                            }
-                                            .foregroundColor(.white)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 10)
-                                        .background(Color.blue)
-                                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                                    }
-                                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                                }
-                            }
+                            // Loading indicator removed - handled by unified overlay
+                            Color.clear
                         }
                         .allowsHitTesting(true)  // Ensure view can receive taps
                     }
                 } else {
                     // Use stable ZStack identity based on asset, not image, to prevent gesture detachment during quality upgrades
-                    ZStack {
+                        ZStack {
                         if let image = currentImage {
                             // Zoomable image - disable hit testing for better drag performance
                             Image(uiImage: image)
@@ -1430,51 +1414,190 @@ struct ContentView: View {
                         }
                         
                         // Low quality indicator overlay (always shown when low quality)
-                            if isCurrentImageLowQuality || isDownloadingHighQuality {
-                                VStack {
-                                    // Top indicator badge
-                                    HStack {
-                                        if isCurrentImageLowQuality {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "exclamationmark.triangle.fill")
-                                                    .font(.system(size: 10))
-                                                Text("Low Quality")
-                                                    .font(.system(size: 10, weight: .medium))
-                                            }
-                                            .foregroundColor(.orange)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(Color.white.opacity(0.9))
-                                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        }
-                                        Spacer()
-                                    }
-                                    .padding(.leading, 16) // Increased padding to stay within rounded corners
-                                    .padding(.top, 16) // Increased padding to stay within rounded corners
-
-                                    Spacer()
-
-                                    // Bottom action button
-                                    HStack {
-                                        Spacer()
-                                        if isCurrentImageLowQuality && !isDownloadingHighQuality {
-                                            Button(action: {
-                                                downloadHighQualityImage(for: currentBatch[currentPhotoIndex])
-                                            }) {
-                                                HStack(spacing: 6) {
-                                                    Image(systemName: "arrow.down.circle.fill")
-                                                        .font(.system(size: 14, weight: .medium))
-                                                    Text("Tap for HD")
-                                                        .font(.system(size: 12, weight: .medium))
+                        // Low quality indicator overlay handled by unified overlay above gesture layer
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(radius: dragTranslation.width == 0 && dragTranslation.height == 0 ? 10 : 0)
+                        .offset(currentDragOffset)
+                        .rotationEffect(.degrees(currentDragOffset.width / 20.0))
+                        .opacity(photoTransitionOpacity)
+                        .scaleEffect(isUndoing ? 1.1 : photoTransitionScale)
+                        .animation(isUndoing ? .easeInOut(duration: 0.3) : nil, value: isUndoing)
+                        .overlay {
+                            swipeGlow(for: currentDragOffset, cornerRadius: 16)
+                        }
+                }
+                
+                // Gesture layer at outer ZStack level - always present, never recreated, prevents jitter
+                // This ensures gestures work immediately when photo appears and don't jitter during dragging
+                Color.clear
+                    .contentShape(RoundedRectangle(cornerRadius: 16))
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .updating($dragTranslation) { value, state, _ in
+                                // Track gesture timing for analytics
+                                if self.lastGestureTime == nil || Date().timeIntervalSince(self.lastGestureTime!) > 1.0 {
+                                    self.lastGestureTime = Date()
+                                }
+                                // Direct assignment for maximum responsiveness - no limiting during drag
+                                    state = value.translation
+                                }
+                                        .onEnded { value in
+                                            if !isUndoing {
+                                                let translation = limitTranslation(value.translation)
+                                                let predicted = limitTranslation(value.predictedEndTranslation)
+                                                let effectiveWidth = abs(predicted.width) > abs(translation.width) ? predicted.width : translation.width
+                                                let swipeThreshold: CGFloat = 80.0
+                                                
+                                                if effectiveWidth > swipeThreshold {
+                                                    dragOffset = CGSize(width: translation.width, height: 0)
+                                        // Swipe right - keep
+                                                    handleSwipe(action: .keep)
+                                                } else if effectiveWidth < -swipeThreshold {
+                                                    dragOffset = CGSize(width: translation.width, height: 0)
+                                        // Swipe left - delete
+                                                    handleSwipe(action: .delete)
+                                                } else {
+                                                    // Reset position
+                                                    withAnimation(.easeOut(duration: 0.1)) {
+                                                        dragOffset = .zero
+                                                    }
                                                 }
-                                                .foregroundColor(.white)
-                                                .padding(.horizontal, 12)
-                                                .padding(.vertical, 6)
-                                                .background(Color.black.opacity(0.7))
-                                                .clipShape(RoundedRectangle(cornerRadius: 8))
                                             }
-                                        } else if isDownloadingHighQuality {
-                                            VStack(spacing: 8) {
+                                        }
+                                )
+                                .onTapGesture {
+                        // Tap to play/pause video if current asset is a video
+                        if isCurrentAssetVideo, let player = currentVideoPlayer {
+                            if player.rate > 0 {
+                                // Video is playing - pause it
+                                player.pause()
+                            } else {
+                                // Video is paused - play it
+                                player.play()
+                            }
+                        }
+                    }
+                    
+                    // Unified Loading/Error Overlay - Placed ABOVE gesture layer to ensure interactivity
+                    // This handles blocking UI states where the Skip button might be needed
+                    ZStack {
+                        // 1. Video Loading (when player is missing but video is expected)
+                        if isCurrentAssetVideo && currentVideoPlayer == nil {
+                            // Video loading state or failure
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .scaleEffect(1.5)
+                                    .tint(.white)
+                                
+                                Text(videoLoadFailed ? "Failed to load" : "Loading video...")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                    .shadow(radius: 2)
+                                
+                                // Show skip button after 3 seconds or if failed
+                                if showSkipButton || videoLoadFailed {
+                                    Button {
+                                        skipToNextPhoto()
+                                    } label: {
+                                            HStack(spacing: 6) {
+                                            Text(videoLoadFailed ? "Failed" : "Taking too long?")
+                                                .font(.system(size: 13, weight: .regular))
+                                            Text("Skip")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                Image(systemName: "forward.fill")
+                                                .font(.system(size: 11, weight: .medium))
+                                            }
+                                            .foregroundColor(.white)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 10)
+                                        .background(Color.blue)
+                                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                                        .shadow(radius: 4)
+                                    }
+                                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                                }
+                            }
+                        }
+                        // 2. Video Loading Overlay (when loading wrapper is active)
+                        else if isVideoLoading {
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .scaleEffect(1.5)
+                                    .tint(.white)
+                                
+                                // Show skip button after 3 seconds of loading
+                                if showSkipButton {
+                                    Button {
+                                        skipToNextPhoto()
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Text("Taking too long?")
+                                                .font(.system(size: 13, weight: .regular))
+                                            Text("Skip")
+                                                .font(.system(size: 13, weight: .semibold))
+                                            Image(systemName: "forward.fill")
+                                                .font(.system(size: 11, weight: .medium))
+                                        }
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 10)
+                                        .background(Color.blue)
+                                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                                        .shadow(radius: 4)
+                                    }
+                                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                                }
+                            }
+                        }
+                        
+                        // 3. Photo High Quality Loading Overlay
+                        if isCurrentImageLowQuality || isDownloadingHighQuality {
+                            VStack {
+                                // Top indicator badge
+                                HStack {
+                                    if isCurrentImageLowQuality {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "exclamationmark.triangle.fill")
+                                                .font(.system(size: 10))
+                                            Text("Low Quality")
+                                                .font(.system(size: 10, weight: .medium))
+                                        }
+                                        .foregroundColor(.orange)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(.ultraThinMaterial)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.leading, 16)
+                                .padding(.top, 16)
+
+                                Spacer()
+
+                                // Bottom action button
+                                HStack {
+                                    Spacer()
+                                    if isCurrentImageLowQuality && !isDownloadingHighQuality {
+                                        Button(action: {
+                                            downloadHighQualityImage(for: currentBatch[currentPhotoIndex])
+                                        }) {
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "arrow.down.circle.fill")
+                                                    .font(.system(size: 14, weight: .medium))
+                                                Text("Tap for HD")
+                                                    .font(.system(size: 12, weight: .medium))
+                                            }
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(Color.black.opacity(0.7))
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        }
+                                    } else if isDownloadingHighQuality {
+                                        VStack(spacing: 8) {
                                             HStack(spacing: 6) {
                                                 ProgressView()
                                                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
@@ -1487,107 +1610,43 @@ struct ContentView: View {
                                             .padding(.vertical, 6)
                                             .background(Color.black.opacity(0.7))
                                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                                                
-                                                // Show skip button after 3 seconds of loading
-                                                if showSkipButton {
-                                                    Button {
-                                                        skipToNextPhoto()
-                                                    } label: {
-                                                        HStack(spacing: 4) {
-                                                            Text("Skip")
-                                                                .font(.system(size: 11, weight: .medium))
-                                                            Image(systemName: "forward.fill")
-                                                                .font(.system(size: 9))
-                                                        }
-                                                        .foregroundColor(.white)
-                                                        .padding(.horizontal, 12)
-                                                        .padding(.vertical, 6)
-                                                        .background(Color.blue)
-                                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                            
+                                            // Show skip button after 3 seconds of loading
+                                            if showSkipButton {
+                                                Button {
+                                                    skipToNextPhoto()
+                                                } label: {
+                                                    HStack(spacing: 4) {
+                                                        Text("Skip")
+                                                            .font(.system(size: 11, weight: .medium))
+                                                        Image(systemName: "forward.fill")
+                                                            .font(.system(size: 9))
                                                     }
-                                                    .transition(.opacity)
+                                                    .foregroundColor(.white)
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 6)
+                                                    .background(Color.blue)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 12))
                                                 }
+                                                .transition(.opacity)
                                             }
                                         }
                                     }
-                                    .padding(.trailing, 16) // Increased padding to stay within rounded corners
-                                    .padding(.bottom, 16) // Increased padding to stay within rounded corners
                                 }
+                                .padding(.trailing, 16)
+                                .padding(.bottom, 16)
                             }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .shadow(radius: dragTranslation.width == 0 && dragTranslation.height == 0 ? 10 : 0)
-                    .offset(currentDragOffset)
-                    .rotationEffect(.degrees(currentDragOffset.width / 20.0))
-                    .opacity(photoTransitionOpacity)
-                    .scaleEffect(isUndoing ? 1.1 : photoTransitionScale)
-                    .animation(isUndoing ? .easeInOut(duration: 0.3) : nil, value: isUndoing)
-                    .overlay {
-                        swipeGlow(for: currentDragOffset, cornerRadius: 16)
-                    }
-                }
-                
-                // Gesture layer at outer ZStack level - always present, never recreated, prevents jitter
-                // This ensures gestures work immediately when photo appears and don't jitter during dragging
-                Color.clear
-                    .contentShape(RoundedRectangle(cornerRadius: 16))
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .updating($dragTranslation) { value, state, _ in
-                                // Track gesture timing for analytics
-                                if self.lastGestureTime == nil || Date().timeIntervalSince(self.lastGestureTime!) > 1.0 {
-                                    self.lastGestureTime = Date()
-                                }
-                                // Direct assignment for maximum responsiveness - no limiting during drag
-                                state = value.translation
-                            }
-                            .onEnded { value in
-                                if !isUndoing {
-                                    let translation = limitTranslation(value.translation)
-                                    let predicted = limitTranslation(value.predictedEndTranslation)
-                                    let effectiveWidth = abs(predicted.width) > abs(translation.width) ? predicted.width : translation.width
-                                    let swipeThreshold: CGFloat = 80.0
-                                    
-                                    if effectiveWidth > swipeThreshold {
-                                        dragOffset = CGSize(width: translation.width, height: 0)
-                                        // Swipe right - keep
-                                        handleSwipe(action: .keep)
-                                    } else if effectiveWidth < -swipeThreshold {
-                                        dragOffset = CGSize(width: translation.width, height: 0)
-                                        // Swipe left - delete
-                                        handleSwipe(action: .delete)
-                                    } else {
-                                        // Reset position
-                                        withAnimation(.easeOut(duration: 0.1)) {
-                                            dragOffset = .zero
-                                        }
-                                    }
-                                }
-                            }
-                    )
-                    .onTapGesture {
-                        // Tap to play/pause video if current asset is a video
-                        if isCurrentAssetVideo, let player = currentVideoPlayer {
-                            if player.rate > 0 {
-                                // Video is playing - pause it
-                                player.pause()
-                            } else {
-                                // Video is paused - resume playback
-                                player.play()
-                            }
-                        } else if !isCurrentAssetVideo && isCurrentImageLowQuality && !isDownloadingHighQuality {
-                        // Tap to download high quality if current image is low quality
-                            downloadHighQualityImage(for: currentBatch[currentPhotoIndex])
                         }
                     }
+                    .allowsHitTesting(true) // Explicitly enable hit testing for buttons!
             }
             .frame(minHeight: 450) // Give photo area more height for better display
             .padding(.bottom, 16) // Add buffer between photo and buttons
-
+            
             // Action buttons and instructions
             VStack(spacing: 12) {
-                HStack(spacing: 16) {
+                HStack(spacing: 8) {
+                    // Delete button (full width with text)
                     SwipeActionButton(
                         title: "Delete",
                         systemImage: "trash.fill",
@@ -1605,17 +1664,15 @@ struct ContentView: View {
                         }
                     )
                     .disabled(isUndoing)
+                    .layoutPriority(1)
                     
-                    SwipeActionButton(
-                        title: "Share",
+                    // Share button (icon only)
+                    IconActionButton(
                         systemImage: "square.and.arrow.up",
                         gradient: [
                             Color(red: 0.56, green: 0.34, blue: 0.97),
                             Color(red: 0.39, green: 0.21, blue: 0.83)
                         ],
-                        iconBackground: Color.white.opacity(0.2),
-                        iconColor: .white,
-                        textColor: .white,
                         strokeColor: Color(red: 0.56, green: 0.34, blue: 0.97).opacity(0.45),
                         shadowColor: Color(red: 0.39, green: 0.21, blue: 0.83),
                         action: {
@@ -1624,9 +1681,28 @@ struct ContentView: View {
                     )
                     .disabled(isUndoing || dragOffset != .zero || isExportingVideo)
                     
+                    // Favorite button (icon only)
+                    IconActionButton(
+                        systemImage: isCurrentPhotoFavorite ? "heart.fill" : "heart",
+                        gradient: isCurrentPhotoFavorite ? [
+                            Color(red: 1.0, green: 0.4, blue: 0.6),
+                            Color(red: 0.9, green: 0.2, blue: 0.5)
+                        ] : [
+                            Color(white: 0.3),
+                            Color(white: 0.2)
+                        ],
+                        strokeColor: isCurrentPhotoFavorite ? Color(red: 1.0, green: 0.4, blue: 0.6).opacity(0.45) : Color(white: 0.4).opacity(0.2),
+                        shadowColor: isCurrentPhotoFavorite ? Color(red: 0.9, green: 0.2, blue: 0.5) : Color.black.opacity(0.2),
+                        action: {
+                            favoriteCurrentPhoto()
+                        }
+                    )
+                    .disabled(isUndoing || dragOffset != .zero)
+                    
+                    // Keep button (full width with text)
                     SwipeActionButton(
                         title: "Keep",
-                        systemImage: "heart.fill",
+                        systemImage: "checkmark",
                         gradient: [
                             Color(red: 0.25, green: 0.79, blue: 0.54),
                             Color(red: 0.11, green: 0.63, blue: 0.38)
@@ -1641,6 +1717,7 @@ struct ContentView: View {
                         }
                     )
                     .disabled(isUndoing)
+                    .layoutPriority(1)
                 }
             }
             .padding(.bottom, 20) // Minimal padding to keep buttons close to bottom
@@ -1727,182 +1804,263 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
             
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Header with modern styling
-                    VStack(spacing: 12) {
-                        Text("Review Your Selections")
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .foregroundColor(.primary)
-                        
-                        Text("Photos marked for deletion")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.top, 20)
+            VStack(spacing: 0) {
+                // Header with modern styling
+                VStack(spacing: 12) {
+                    Text("Review Your Selections")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
                     
-                    // Photos to delete
-                    let photosToDelete = swipedPhotos.filter { $0.action == .delete }
-                    
-                    // Storage calculation with modern card design
-                    if !photosToDelete.isEmpty {
-                        VStack(spacing: 12) {
-                            HStack {
-                                Image(systemName: "externaldrive.fill")
-                                    .font(.system(size: 20, weight: .medium))
-                                    .foregroundColor(.green)
-                                
-                                Text("Storage to be saved:")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.primary)
-                                
-                                Spacer()
-                            }
+                    Text("Tap a photo to expand, or undo deletion")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 20)
+                .padding(.bottom, 16)
+                
+                // Photos to delete
+                let photosToDelete = swipedPhotos.filter { $0.action == .delete }
+                
+                // Storage calculation with modern card design
+                if !photosToDelete.isEmpty {
+                    VStack(spacing: 8) {
+                        HStack {
+                            Image(systemName: "externaldrive.fill")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundColor(.green)
+                            
+                            Text("Storage to be saved:")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundColor(.primary)
+                            
+                            Spacer()
                             
                             Text(storageToBeSaved)
-                                .font(.system(size: 24, weight: .bold))
+                                .font(.system(size: 18, weight: .bold))
                                 .foregroundColor(.green)
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(Color.green.opacity(0.1))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16)
-                                        .stroke(Color.green.opacity(0.3), lineWidth: 1)
-                                )
-                        )
-                        .padding(.horizontal, 20)
                     }
-                    
-                    if photosToDelete.isEmpty {
-                        VStack(spacing: 24) {
-                            // Icon with gradient background
-                            ZStack {
-                                Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            gradient: Gradient(colors: [Color.green.opacity(0.2), Color.blue.opacity(0.2)]),
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.green.opacity(0.1))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.green.opacity(0.3), lineWidth: 1)
+                            )
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+                }
+                
+                if photosToDelete.isEmpty {
+                    Spacer()
+                    VStack(spacing: 24) {
+                        // Icon with gradient background
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [Color.green.opacity(0.2), Color.blue.opacity(0.2)]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
                                     )
-                                    .frame(width: 120, height: 120)
-                                
-                            Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 50, weight: .medium))
-                                    .foregroundStyle(
-                                        LinearGradient(
-                                            gradient: Gradient(colors: [Color.green, Color.blue]),
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                            }
+                                )
+                                .frame(width: 100, height: 100)
                             
-                            // Text content
-                            VStack(spacing: 12) {
-                                Text(noPhotosMarkedTitle)
-                                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                                    .foregroundColor(.primary)
-                                
-                                Text(noPhotosMarkedSubtitle)
-                                    .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                    .lineLimit(nil)
-                            }
-                            .padding(.horizontal, 20)
-                        }
-                        .padding(.vertical, 40)
-                        .padding(.horizontal, 20)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [
-                                    Color.green.opacity(0.05),
-                                    Color.blue.opacity(0.05),
-                                    Color.purple.opacity(0.05)
-                                ]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                        .padding(.horizontal, 20)
-                    } else {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                            ForEach(photosToDelete, id: \.asset.localIdentifier) { swipedPhoto in
-                                PhotoThumbnailView(
-                                    asset: swipedPhoto.asset,
-                                    onUndo: {
-                                        undoDelete(for: swipedPhoto.asset)
-                                    }
-                                )
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                    }
-                    
-                    // Action buttons with modern styling
-                    VStack(spacing: 16) {
-                        if !photosToDelete.isEmpty {
-                            Button("Keep All") {
-                                keepAllPhotos()
-                            }
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.blue)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 56)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .fill(Color.blue.opacity(0.1))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 16)
-                                            .stroke(Color.blue, lineWidth: 2)
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 44, weight: .medium))
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: [Color.green, Color.blue]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
                                     )
-                            )
-                            .disabled(isConfirmingBatch)
+                                )
                         }
                         
-                        Button(action: {
-                            isConfirmingBatch = true
-                            confirmBatch()
-                        }) {
+                        // Text content
+                        VStack(spacing: 10) {
+                            Text(noPhotosMarkedTitle)
+                                .font(.system(size: 22, weight: .bold, design: .rounded))
+                                .foregroundColor(.primary)
+                            
+                            Text(noPhotosMarkedSubtitle)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(nil)
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.vertical, 30)
+                    .padding(.horizontal, 20)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color.green.opacity(0.05),
+                                Color.blue.opacity(0.05),
+                                Color.purple.opacity(0.05)
+                            ]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .padding(.horizontal, 20)
+                    Spacer()
+                } else {
+                    // Horizontal carousel of thumbnails
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("\(photosToDelete.count) photo\(photosToDelete.count == 1 ? "" : "s") marked for deletion")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 20)
+                        
+                        ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 12) {
-                                if isConfirmingBatch {
-                                    ProgressView()
-                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                        .scaleEffect(0.9)
-                                } else {
-                                    Image(systemName: photosToDelete.isEmpty ? "arrow.right" : "trash.fill")
-                                        .font(.system(size: 18, weight: .medium))
+                                ForEach(photosToDelete, id: \.asset.localIdentifier) { swipedPhoto in
+                                    PhotoThumbnailView(
+                                        asset: swipedPhoto.asset,
+                                        onUndo: {
+                                            undoDelete(for: swipedPhoto.asset)
+                                        },
+                                        size: 90,
+                                        showUndoButton: true,
+                                        onTap: {
+                                            expandedPhotoAsset = swipedPhoto.asset
+                                        }
+                                    )
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    
+                    Spacer()
+                }
+                
+                // Action buttons matching SwipeActionButton style
+                VStack(spacing: 12) {
+                    if !photosToDelete.isEmpty {
+                        Button(action: {
+                            keepAllPhotos()
+                        }) {
+                            HStack(spacing: 10) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.white.opacity(0.2))
+                                        .frame(width: 28, height: 28)
+                                    Image(systemName: "arrow.uturn.left")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(.white)
                                 }
                                 
-                                Text(isConfirmingBatch ? "Processing..." : (photosToDelete.isEmpty ? "Continue" : "Confirm Deletion"))
-                                    .font(.system(size: 18, weight: .semibold))
+                                Text("Keep All")
+                                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
                             }
-                        }
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: photosToDelete.isEmpty ? [Color.blue, Color.purple] : [.red, .red.opacity(0.8)]),
-                                startPoint: .leading,
-                                endPoint: .trailing
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            gradient: Gradient(colors: [Color.blue, Color.blue.opacity(0.8)]),
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
                             )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .shadow(color: photosToDelete.isEmpty ? Color.blue.opacity(0.3) : Color.red.opacity(0.3), radius: 8, x: 0, y: 4)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.blue.opacity(0.45), lineWidth: 1)
+                            )
+                            .shadow(color: Color.blue.opacity(0.3), radius: 10, x: 0, y: 6)
+                        }
+                        .buttonStyle(.plain)
                         .disabled(isConfirmingBatch)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 120) // Extra padding to avoid progress bar overlap
+                    
+                    Button(action: {
+                        isConfirmingBatch = true
+                        confirmBatch()
+                    }) {
+                        HStack(spacing: 10) {
+                            if isConfirmingBatch {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(0.8)
+                            } else {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.white.opacity(0.2))
+                                        .frame(width: 28, height: 28)
+                                    Image(systemName: photosToDelete.isEmpty ? "arrow.right" : "trash.fill")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            
+                            Text(isConfirmingBatch ? "Processing..." : (photosToDelete.isEmpty ? "Continue" : "Confirm Deletion"))
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        gradient: Gradient(colors: photosToDelete.isEmpty ? [Color.blue, Color.purple] : [Color(red: 0.99, green: 0.43, blue: 0.37), Color(red: 0.84, green: 0.17, blue: 0.31)]),
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(
+                                    photosToDelete.isEmpty ? Color.purple.opacity(0.45) : Color(red: 0.99, green: 0.43, blue: 0.37).opacity(0.45),
+                                    lineWidth: 1
+                                )
+                        )
+                        .shadow(
+                            color: photosToDelete.isEmpty ? Color.purple.opacity(0.3) : Color(red: 0.84, green: 0.17, blue: 0.31).opacity(0.3),
+                            radius: 10, x: 0, y: 6
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isConfirmingBatch)
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
+            }
+            
+            // Expanded photo overlay
+            if let expandedAsset = expandedPhotoAsset {
+                ExpandedPhotoView(
+                    asset: expandedAsset,
+                    onUndo: {
+                        undoDelete(for: expandedAsset)
+                    },
+                    onDismiss: {
+                        expandedPhotoAsset = nil
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(100)
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: expandedPhotoAsset != nil)
     }
     
     private var continueScreen: some View {
@@ -2220,241 +2378,8 @@ struct ContentView: View {
     private var menuView: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 0) {
-                // Header section with better design
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Filter Photos")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
-                        .padding(.top, 20)
-                    
-                    Text("Choose how to organize your photo review session")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 20)
-                .background(
-                    LinearGradient(
-                        gradient: Gradient(colors: [
-                            Color(.systemBackground),
-                            Color(.systemBackground).opacity(0.8)
-                        ]),
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                
-                List {
-                    // Subscribe button for non-pro users
-                    if purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired {
-                        Section {
-                            Button(action: {
-                                // showingMenu = false // Removed - no longer using menu // Dismiss menu first
-                                showingSubscriptionStatus = true
-                            }) {
-                                HStack {
-                                    Image(systemName: "crown.fill")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.yellow)
-                                        .frame(width: 24, height: 24)
-                                        .background(Color.clear)
-                                        .clipShape(Circle())
-                                    
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Upgrade to Pro")
-                                            .font(.system(size: 16, weight: .medium))
-                                            .foregroundColor(.primary)
-                                        
-                                        Text("Unlock unlimited swipes and premium features")
-                                            .font(.system(size: 14))
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(nil)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    
-                                Spacer()
-                                }
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
-                    
-                    Section {
-                        NavigationLink(destination: settingsView) {
-                            HStack {
-                                Image(systemName: "gearshape")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.blue)
-                                    .frame(width: 24, height: 24)
-                                    .background(Color.clear)
-                                    .clipShape(Circle())
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Settings")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.primary)
-                                    
-                                    Text("App preferences and storage options")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(.secondary)
-                                }
-                                
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        
-                        NavigationLink(destination: StreakAnalyticsView()) {
-                            HStack {
-                                Image(systemName: "chart.bar.fill")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.green)
-                                    .frame(width: 24, height: 24)
-                                    .background(Color.clear)
-                                    .clipShape(Circle())
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("My Stats")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.primary)
-                                    
-                                    Text("View your progress and achievements")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(.secondary)
-                                }
-                                
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        
-                        NavigationLink(destination: faqView) {
-                            HStack {
-                                Image(systemName: "questionmark.circle.fill")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.orange)
-                                    .frame(width: 24, height: 24)
-                                    .background(Color.clear)
-                                    .clipShape(Circle())
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("FAQ & Help")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.primary)
-                                    
-                                    Text("Common questions and guides")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(.secondary)
-                                }
-                                
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        
-                        Button(action: rateApp) {
-                            HStack {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.yellow)
-                                    .frame(width: 24, height: 24)
-                                    .background(Color.clear)
-                                    .clipShape(Circle())
-                                
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Rate Kage")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.primary)
-                                    
-                                    Text("Help us with a review")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(.secondary)
-                                }
-                                
-                                Spacer()
-                            }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-                    
-                    Section {
-                        AsyncMenuRow(
-                            icon: "shuffle",
-                            title: "Random",
-                            subtitle: "Mixed photos from all years",
-                            isSelected: selectedFilter == .random,
-                            processedCount: totalProcessed,
-                            action: {
-                                selectedFilter = .random
-                                // showingMenu = false // Removed - no longer using menu
-                                resetAndReload()
-                            },
-                            photoCounter: { self.countPhotosForFilter(.random) },
-                            contentType: selectedContentType
-                        )
-                        
-                        AsyncMenuRow(
-                            icon: "calendar.badge.clock",
-                            title: "On this Day",
-                            subtitle: "Photos from this day in previous years",
-                            isSelected: selectedFilter == .onThisDay,
-                            processedCount: filterProcessedCounts[.onThisDay] ?? 0,
-                            action: {
-                                selectedFilter = .onThisDay
-                                // showingMenu = false // Removed - no longer using menu
-                                resetAndReload()
-                            },
-                            photoCounter: { self.countPhotosForFilter(.onThisDay) },
-                            contentType: selectedContentType
-                        )
-                        
-                        AsyncMenuRow(
-                            icon: "rectangle.3.group",
-                            title: "Screenshots",
-                            subtitle: "Photos from your screenshots folder",
-                            isSelected: selectedFilter == .screenshots,
-                            processedCount: filterProcessedCounts[.screenshots] ?? 0,
-                            action: {
-                                selectedFilter = .screenshots
-                                // showingMenu = false // Removed - no longer using menu
-                                resetAndReload()
-                            },
-                            photoCounter: { self.countPhotosForFilter(.screenshots) },
-                            contentType: selectedContentType
-                        )
-                    }
-                    
-                    if !availableYears.isEmpty {
-                        Section("By Year") {
-                            ForEach(availableYears, id: \.self) { year in
-                                let yearFilter = PhotoFilter.year(year)
-                                AsyncMenuRow(
-                                    icon: "calendar",
-                                    title: String(year),
-                                    subtitle: "Photos from \(year)",
-                                    isSelected: selectedFilter == yearFilter,
-                                    processedCount: filterProcessedCounts[yearFilter] ?? 0,
-                                    action: {
-                                        selectedFilter = yearFilter
-                                        // showingMenu = false // Removed - no longer using menu
-                                        resetAndReload()
-                                    },
-                                    photoCounter: { self.countPhotosForFilter(yearFilter) },
-                                    contentType: selectedContentType
-                                )
-                            }
-                        }
-                    }
-                }
-                .listStyle(InsetGroupedListStyle())
-                .background(Color(.systemGroupedBackground))
-                .modifier(ScrollContentBackgroundHidden())
-                
-
+                menuHeader
+                menuList
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("")
@@ -2469,6 +2394,259 @@ struct ContentView: View {
                 }
             }
             .kageNavigationBarStyle()
+        }
+    }
+    
+    private var menuHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Filter Photos")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+                .padding(.top, 20)
+            
+            Text("Choose how to organize your photo review session")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
+        .background(
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color(.systemBackground),
+                    Color(.systemBackground).opacity(0.8)
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+    
+    private var menuList: some View {
+        List {
+            menuSubscriptionSection
+            menuNavigationSection
+            menuFilterSection
+            menuYearSection
+        }
+        .listStyle(InsetGroupedListStyle())
+        .background(Color(.systemGroupedBackground))
+        .modifier(ScrollContentBackgroundHidden())
+    }
+    
+    private var menuSubscriptionSection: some View {
+        Group {
+            if purchaseManager.subscriptionStatus == .notSubscribed || purchaseManager.subscriptionStatus == .expired {
+                Section {
+                    Button(action: {
+                        // showingMenu = false // Removed - no longer using menu // Dismiss menu first
+                        showingSubscriptionStatus = true
+                    }) {
+                        HStack {
+                            Image(systemName: "crown.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.yellow)
+                                .frame(width: 24, height: 24)
+                                .background(Color.clear)
+                                .clipShape(Circle())
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Upgrade to Pro")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.primary)
+                                
+                                Text("Unlock unlimited swipes and premium features")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(nil)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+        }
+    }
+    
+    private var menuNavigationSection: some View {
+        Section {
+            NavigationLink(destination: settingsView) {
+                HStack {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.blue)
+                        .frame(width: 24, height: 24)
+                        .background(Color.clear)
+                        .clipShape(Circle())
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Settings")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        
+                        Text("App preferences and storage options")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                }
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            NavigationLink(destination: StreakAnalyticsView()) {
+                HStack {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.green)
+                        .frame(width: 24, height: 24)
+                        .background(Color.clear)
+                        .clipShape(Circle())
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("My Stats")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        
+                        Text("View your progress and achievements")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                }
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            NavigationLink(destination: faqView) {
+                HStack {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.orange)
+                        .frame(width: 24, height: 24)
+                        .background(Color.clear)
+                        .clipShape(Circle())
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("FAQ & Help")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        
+                        Text("Common questions and guides")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                }
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            Button(action: rateApp) {
+                HStack {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.yellow)
+                        .frame(width: 24, height: 24)
+                        .background(Color.clear)
+                        .clipShape(Circle())
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Rate Kage")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                        
+                        Text("Help us with a review")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                }
+            }
+            .buttonStyle(PlainButtonStyle())
+        }
+    }
+    
+    private var menuFilterSection: some View {
+        Section {
+            AsyncMenuRow(
+                icon: "shuffle",
+                title: LocalizedStringKey("Random"),
+                subtitle: LocalizedStringKey("Mixed photos from all years"),
+                isSelected: selectedFilter == .random,
+                processedCount: totalProcessed,
+                action: {
+                    selectedFilter = .random
+                    // showingMenu = false // Removed - no longer using menu
+                    resetAndReload()
+                },
+                photoCounter: { self.countPhotosForFilter(.random) },
+                contentType: selectedContentType
+            )
+            
+            AsyncMenuRow(
+                icon: "calendar.badge.clock",
+                title: LocalizedStringKey("On this Day"),
+                subtitle: LocalizedStringKey("Photos from this day in previous years"),
+                isSelected: selectedFilter == .onThisDay,
+                processedCount: filterProcessedCounts[.onThisDay] ?? 0,
+                action: {
+                    selectedFilter = .onThisDay
+                    // showingMenu = false // Removed - no longer using menu
+                    resetAndReload()
+                },
+                photoCounter: { self.countPhotosForFilter(.onThisDay) },
+                contentType: selectedContentType
+            )
+            
+            AsyncMenuRow(
+                icon: "rectangle.3.group",
+                title: LocalizedStringKey("Screenshots"),
+                subtitle: LocalizedStringKey("Photos from your screenshots folder"),
+                isSelected: selectedFilter == .screenshots,
+                processedCount: filterProcessedCounts[.screenshots] ?? 0,
+                action: {
+                    selectedFilter = .screenshots
+                    // showingMenu = false // Removed - no longer using menu
+                    resetAndReload()
+                },
+                photoCounter: { self.countPhotosForFilter(.screenshots) },
+                contentType: selectedContentType
+            )
+        }
+    }
+    
+    private var menuYearSection: some View {
+        Group {
+            if !availableYears.isEmpty {
+                Section("By Year") {
+                    ForEach(availableYears, id: \.self) { year in
+                        let yearFilter = PhotoFilter.year(year)
+                        AsyncMenuRow(
+                            icon: "calendar",
+                            title: LocalizedStringKey(String(year)),
+                            subtitle: LocalizedStringKey("Photos from \(year)"),
+                            isSelected: selectedFilter == yearFilter,
+                            processedCount: filterProcessedCounts[yearFilter] ?? 0,
+                            action: {
+                                selectedFilter = yearFilter
+                                // showingMenu = false // Removed - no longer using menu
+                                resetAndReload()
+                            },
+                            photoCounter: { self.countPhotosForFilter(yearFilter) },
+                            contentType: selectedContentType
+                        )
+                    }
+                }
+            }
         }
     }
     
@@ -2997,12 +3175,12 @@ struct ContentView: View {
                     ) {
                         FAQItem(
                             question: "How does Kage work?",
-                            answer: "Kage helps you declutter your photo library by showing you photos one at a time. Simply swipe right to keep a photo or swipe left to delete it. The app processes photos in batches of 10 and shows you a review screen where you can confirm or undo your choices before any deletion occurs."
+                            answer: "Kage helps you declutter your photo library by showing you photos one at a time. Simply swipe right to keep a photo or swipe left to delete it. The app processes photos in batches of 15 and shows you a review screen where you can confirm or undo your choices before any deletion occurs."
                         )
                         
                         FAQItem(
                             question: "Is it safe to delete photos?",
-                            answer: "Yes! Kage uses iOS's native photo deletion system with multiple safety layers. Photos are processed in batches of 10, and you must review and confirm each batch before any deletion occurs. When confirmed, photos are moved to your Recently Deleted album where they stay for 30 days before being permanently removed. You can always recover them from Recently Deleted if needed."
+                            answer: "Yes! Kage uses iOS's native photo deletion system with multiple safety layers. Photos are processed in batches of 15, and you must review and confirm each batch before any deletion occurs. When confirmed, photos are moved to your Recently Deleted album where they stay for 30 days before being permanently removed. You can always recover them from Recently Deleted if needed."
                         )
                         
                         FAQItem(
@@ -3012,7 +3190,7 @@ struct ContentView: View {
                         
                         FAQItem(
                             question: "How does the batch processing work?",
-                            answer: "After swiping through 10 photos, you'll see a review screen showing all your choices. You can change any decision before confirming. Nothing is deleted until you tap 'Confirm Deletion'. This ensures you're always in control and can undo any mistakes."
+                            answer: "After swiping through 15 photos, you'll see a review screen showing all your choices. You can change any decision before confirming. Nothing is deleted until you tap 'Confirm Deletion'. This ensures you're always in control and can undo any mistakes."
                         )
 
                         FAQItem(
@@ -3214,22 +3392,25 @@ struct ContentView: View {
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundColor(.primary)
                         
-                        // Progress bar - using ZStack instead of GeometryReader to avoid ViewSizePreferenceKey issues
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.gray.opacity(0.2))
-                                .frame(height: 8)
-                            
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [.purple, .pink],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
+                        // Progress bar - using GeometryReader for proper width-based progress
+                        // The fill bar uses frame(width:) to prevent overflow outside the track
+                        GeometryReader { geometry in
+                            ZStack(alignment: .leading) {
+                                // Background track
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.gray.opacity(0.2))
+                                
+                                // Progress fill - width clamped to prevent exceeding track bounds
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [.purple, .pink],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
                                     )
-                                )
-                                .frame(height: 8)
-                                .scaleEffect(x: tikTokLoadingProgress, y: 1.0, anchor: .leading)
+                                    .frame(width: max(0, min(geometry.size.width, geometry.size.width * tikTokLoadingProgress)))
+                            }
                         }
                         .frame(height: 8)
                         .padding(.horizontal, 40)
@@ -3272,13 +3453,13 @@ struct ContentView: View {
                 .padding()
             } else {
                 // Standard loading view
-                ProgressView()
-                    .scaleEffect(1.2)
-                
-                Text("Loading photos...")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
+            ProgressView()
+                .scaleEffect(1.2)
+            
+            Text("Loading photos...")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
             }
         }
         .padding()
@@ -3350,76 +3531,225 @@ struct ContentView: View {
     }
     
     private var dailyLimitReachedView: some View {
-        VStack(spacing: 30) {
-            Image(systemName: "hand.raised.fill")
-                .font(.system(size: 80))
-                .foregroundColor(.orange)
-            
-            Text("Daily Limit Reached!")
-                .font(.system(size: 32, weight: .bold))
-                .foregroundColor(.primary)
-            
-            Text("You've used all 50 free swipes for today.")
-                .font(.system(size: 18))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-            
-            VStack(spacing: 16) {
-                // Upgrade to Premium Button
-                Button(action: {
-                    showingSubscriptionStatus = true
-                }) {
-                    HStack {
-                        Image(systemName: "crown.fill")
-                            .foregroundColor(.yellow)
-                        Text("Upgrade to Premium")
-                            .font(.system(size: 18, weight: .semibold))
+        VStack(spacing: 0) {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 24) {
+                    // Header Area
+                    VStack(spacing: 12) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [.orange.opacity(0.1), .orange.opacity(0.05)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 80, height: 80)
+                            
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 36, weight: .bold))
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        colors: [.orange, .yellow],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .shadow(color: .orange.opacity(0.3), radius: 8, x: 0, y: 4)
+                        }
+                        .padding(.top, 10)
+                        
+                        Text("Daily Limit Reached")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .multilineTextAlignment(.center)
                     }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.blue, .purple]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                
-                // Watch Ad for More Swipes Button
-                Button(action: {
-                    showRewardedAdDirectly()
-                }) {
-                    HStack {
-                        Image(systemName: "play.circle.fill")
-                            .foregroundColor(.green)
-                        Text("Watch Ad for +50 Swipes")
-                            .font(.system(size: 16, weight: .medium))
+                    
+                    // Streak Bonus Graphic
+                     streakLimitBonusGraphic
+                        .padding(.horizontal)
+                    
+                    // Action Buttons
+                    VStack(spacing: 16) {
+                        // Upgrade to Premium Button
+                        Button(action: {
+                            showingSubscriptionStatus = true
+                        }) {
+                            HStack(spacing: 12) {
+                                Image(systemName: "crown.fill")
+                                    .font(.system(size: 20, weight: .bold))
+                                    .foregroundColor(.yellow)
+                                
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Get Unlimited Swipes")
+                                        .font(.system(size: 18, weight: .bold))
+                                    Text("Special Premium Offer")
+                                        .font(.system(size: 12))
+                                        .opacity(0.9)
+                                }
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [Color.blue, Color.purple]),
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .shadow(color: Color.blue.opacity(0.3), radius: 10, x: 0, y: 5)
+                        }
+                        
+                        // Watch Ad for More Swipes Button
+                        Button(action: {
+                            showRewardedAdDirectly()
+                        }) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 18))
+                                Text("Watch Ad for +50 Swipes")
+                                    .font(.system(size: 16, weight: .semibold))
+                            }
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(Color.green.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .stroke(Color.green.opacity(0.2), lineWidth: 1.5)
+                            )
+                        }
+                        
+                        // Come Back Tomorrow Button
+                        Button(action: {
+                            performImmediateDismissal()
+                        }) {
+                            Text("Come Back Tomorrow")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.secondary)
+                                .padding(.vertical, 8)
+                        }
                     }
-                    .foregroundColor(.primary)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.green.opacity(0.3), lineWidth: 1)
-                    )
+                    .padding(.horizontal, 8)
                 }
-                
-                // Come Back Tomorrow Button
-                Button(action: {
-                    dismiss()
-                }) {
-                    Text("Come Back Tomorrow")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.secondary)
-                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 16)
             }
         }
-        .padding()
+        .background(Color(.systemBackground))
+    }
+    
+    private var streakLimitBonusGraphic: some View {
+        VStack(spacing: 20) {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(spacing: 8) {
+                    Text("Base")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.secondary)
+                    
+                    ZStack(alignment: .bottom) {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.gray.opacity(0.1))
+                            .frame(width: 60, height: 80)
+                        
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.gray.opacity(0.3))
+                            .frame(width: 60, height: 40)
+                    }
+                    
+                    Text("50")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                }
+                
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 25)
+                
+                VStack(spacing: 8) {
+                    Text("Streak Bonus")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.orange)
+                    
+                    ZStack(alignment: .bottom) {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.orange.opacity(0.1))
+                            .frame(width: 80, height: 80)
+                        
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [.orange, .yellow],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .frame(width: 80, height: CGFloat(min(80, (Double(streakManager.dailyLimitBonus) / 100.0) * 80.0 + 20)))
+                        
+                        VStack(spacing: 2) {
+                            Image(systemName: "flame.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white)
+                            Text("\(streakManager.currentStreak)d")
+                                .font(.system(size: 10, weight: .black))
+                                .foregroundColor(.white)
+                        }
+                        .padding(.bottom, 8)
+                    }
+                    
+                    Text("+\(streakManager.dailyLimitBonus)")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundColor(.orange)
+                }
+                
+                Image(systemName: "equal")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .padding(.bottom, 25)
+                
+                VStack(spacing: 8) {
+                    Text("Today's Limit")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.primary)
+                    
+                    ZStack(alignment: .bottom) {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.blue.opacity(0.1))
+                            .frame(width: 80, height: 100)
+                        
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [.blue, .cyan],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .frame(width: 80, height: 80)
+                    }
+                    
+                    Text("\(purchaseManager.freeDailySwipes)")
+                        .font(.system(size: 20, weight: .black, design: .rounded))
+                        .foregroundColor(.blue)
+                }
+            }
+            .padding(.vertical, 10)
+            
+            Text("Keep your streak alive to increase your daily limit by 10 swipes every day!")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .padding(20)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
     }
     
     private var networkWarningPopup: some View {
@@ -3558,7 +3888,7 @@ struct ContentView: View {
         let fetchOptions = PHFetchOptions()
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         fetchOptions.includeHiddenAssets = false
-
+        
         // Filter by content type
         let fetchResult: PHFetchResult<PHAsset>
         
@@ -3607,7 +3937,43 @@ struct ContentView: View {
             
             DispatchQueue.main.async {
                 // Filter photos based on selection and exclude processed photos
-                self.photos = self.filterPhotos(loadedPhotos)
+                let filtered = self.filterPhotos(loadedPhotos)
+                
+                // OFFLINE-FIRST OPTIMIZATION: Prioritize local assets for immediate display
+                // Adaptive Strategy: Use stricter checks if offline to avoid blurry photos
+                
+                // Detect offline status
+                let isOffline = !NetworkMonitor.shared.isConnected
+                
+                // If offline, use smaller batch with stricter check (slower but accurate)
+                // If online, use larger batch with fast check (metadata only)
+                let priorityBatchSize = isOffline ? 15 : 50
+                
+                if filtered.count > 0 {
+                    let prefixCount = min(filtered.count, priorityBatchSize)
+                    let head = Array(filtered.prefix(prefixCount))
+                    let tail = Array(filtered.dropFirst(prefixCount))
+                    
+                    // Pre-calculate local status to avoid repeated disk I/O during sort
+                    // This is critical for performance when using isRobustLocalCheck
+                    let headWithStatus: [(asset: PHAsset, isLocal: Bool)] = head.map { asset in
+                        let isLocal = isOffline ? self.isRobustLocalCheck(asset) : self.isFastLocalCheck(asset)
+                        return (asset, isLocal)
+                    }
+                    
+                    // Sort head: Local assets first
+                    let sortedHead = headWithStatus.sorted { item1, item2 in
+                        if item1.isLocal != item2.isLocal {
+                            return item1.isLocal
+                        }
+                        // Secondary sort: Keep original order
+                        return false
+                    }.map { $0.asset }
+                    
+                    self.photos = sortedHead + tail
+                } else {
+                    self.photos = filtered
+                }
                 
                 // Check if current filter is completed
                 self.isCategoryCompleted = self.isCurrentFilterCompleted()
@@ -3626,16 +3992,14 @@ struct ContentView: View {
         }
 
         let loadPhotosEnd = Date()
-        let loadPhotosDuration = loadPhotosEnd.timeIntervalSince(loadPhotosStart)
+        // let loadPhotosDuration = loadPhotosEnd.timeIntervalSince(loadPhotosStart) // Removed unused variable
     }
     
     private func setupNewBatch() {
-        print("📦 [setupNewBatch] ENTER - photos.count=\(photos.count), batchIndex=\(batchIndex), selectedFilter=\(selectedFilter)")
         let batchStartTime = Date()
 
         // Ensure we have photos to work with
         guard !photos.isEmpty else {
-            print("📦 [setupNewBatch] Photos array is empty")
             // Check if there are actually remaining photos without expensive re-filtering
             let remainingCount = countPhotosForFilter(selectedFilter)
             if remainingCount == 0 {
@@ -3649,13 +4013,10 @@ struct ContentView: View {
             return
         }
         
-        print("📦 [setupNewBatch] Calculating batch indices")
         let startIndex = batchIndex * batchSize
-        print("📦 [setupNewBatch] startIndex=\(startIndex), photos.count=\(photos.count)")
         
         // Check if we've already processed all photos in the current batch
         if startIndex >= photos.count {
-            print("📦 [setupNewBatch] startIndex >= photos.count, checking remaining count")
             // Check if there are actually more photos remaining
             let remainingCount = countPhotosForFilter(selectedFilter)
             if remainingCount == 0 {
@@ -3670,7 +4031,7 @@ struct ContentView: View {
                     // Still off - reset batch index and continue (avoid expensive re-filtering)
                     batchIndex = 0
                     // Continue with corrected batch index instead of recursing
-                }
+                    }
             }
             return
         }
@@ -3696,7 +4057,7 @@ struct ContentView: View {
             // Re-filter all photos to ensure we have the latest state
             let remainingCount = countPhotosForFilter(selectedFilter)
             if remainingCount == 0 {
-                isCompleted = true
+            isCompleted = true
             } else {
                 // Re-filter and retry with updated photos array
                 photos = filterPhotos(allPhotos)
@@ -3708,8 +4069,8 @@ struct ContentView: View {
             return
         }
         
-        print("📦 [setupNewBatch] Creating current batch from photos[\(startIndex)..<\(endIndex)]")
         currentPhotoIndex = 0
+        updateFavoriteState()
         swipedPhotos.removeAll()
         UserDefaults.standard.removeObject(forKey: swipedPhotosKey)
         
@@ -3723,7 +4084,6 @@ struct ContentView: View {
         showingContinueScreen = false
         lastBatchDeletedCount = 0
         
-        print("📦 [setupNewBatch] Batch state reset, preparing to load first asset")
         // Prime the first asset so the initial photo is ready in high-quality
         allowVideoPreloading = true
         needsVideoPreloadRestart = false
@@ -3733,32 +4093,24 @@ struct ContentView: View {
         var hasPreloadedVideo = false
         
         if let firstAsset = currentBatch.first {
-            print("📦 [setupNewBatch] First asset found: mediaType=\(firstAsset.mediaType == .video ? "video" : "image"), localId=\(firstAsset.localIdentifier)")
             // Check if we have preloaded content for the first asset
             hasPreloadedImage = firstAsset.mediaType == .image && preloadedImages[firstAsset.localIdentifier] != nil
             hasPreloadedVideo = firstAsset.mediaType == .video && preloadedVideoAssets[firstAsset.localIdentifier] != nil
-            print("📦 [setupNewBatch] Preload check: hasPreloadedImage=\(hasPreloadedImage), hasPreloadedVideo=\(hasPreloadedVideo)")
             
             // Set currentAsset early so loadCurrentPhoto() can detect if already loaded
             currentAsset = firstAsset
             isCurrentAssetVideo = firstAsset.mediaType == .video
             
-            print("📦 [setupNewBatch] Loading photo metadata")
             loadPhotoMetadata(for: firstAsset)
-            print("📦 [setupNewBatch] Photo metadata loaded")
             
             if firstAsset.mediaType == .video {
-                print("📦 [setupNewBatch] First asset is VIDEO")
                 allowVideoPreloading = false
                 // Use atomic video switching (handles preloaded assets automatically)
                 switchToVideo(asset: firstAsset)
                 hasPreloadedVideo = preloadedVideoAssets[firstAsset.localIdentifier] != nil
-                print("📦 [setupNewBatch] Video switching initiated")
             } else if firstAsset.mediaType == .image {
-                print("📦 [setupNewBatch] First asset is IMAGE")
                 // Check if image is already preloaded from preloadNextBatch()
                 if let preloadedImage = preloadedImages[firstAsset.localIdentifier] {
-                    print("📦 [setupNewBatch] Using preloaded image (isDegraded=\(preloadedImage.isDegraded))")
                     // Use the preloaded image immediately
                     currentImage = preloadedImage.image
                     isCurrentImageLowQuality = preloadedImage.isDegraded
@@ -3767,26 +4119,20 @@ struct ContentView: View {
                     
                     // If degraded, promote to high quality
                     if preloadedImage.isDegraded {
-                        print("📦 [setupNewBatch] Promoting degraded image to high quality")
                         let targetSize = getTargetSize(for: storagePreference)
                         promotePreloadedAssetToPreferredQuality(for: firstAsset, targetSize: targetSize)
                     }
                 } else {
-                    print("📦 [setupNewBatch] No preloaded image, loading from scratch")
                     // Clear current image before loading new one
                     currentImage = nil
-                    print("📦 [setupNewBatch] Calling loadImage()")
                     // Load the first image immediately if not preloaded
                     loadImage(for: firstAsset)
-                    print("📦 [setupNewBatch] loadImage() returned")
                 }
             } else if shouldPreloadVideo(for: firstAsset) {
-                print("📦 [setupNewBatch] Should preload video")
                 preloadVideo(for: firstAsset)
             }
         }
         
-        print("📦 [setupNewBatch] Clearing metadata and resetting state")
         // Clear metadata for new batch (only if we don't have preloaded content)
         if !hasPreloadedImage {
             currentImage = nil
@@ -3806,19 +4152,14 @@ struct ContentView: View {
         // Only call loadCurrentPhoto if we're not already loading a video
         // switchToVideo already handles video loading, so skip for videos to prevent duplicate calls
         if !isVideoLoading {
-        print("📦 [setupNewBatch] Calling loadCurrentPhoto()")
         loadCurrentPhoto()
-        print("📦 [setupNewBatch] loadCurrentPhoto() returned")
         } else {
-            print("📦 [setupNewBatch] Skipping loadCurrentPhoto() - video already loading")
         }
 
         // For TikTok mode, add a small delay before preloading to prevent UI freeze
         // This allows the first video to load and display before starting aggressive preloading
         if isTikTokMode {
-            print("📦 [setupNewBatch] TikTok mode detected, scheduling preload after 0.3s delay")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                print("📦 [setupNewBatch - TikTok] Starting delayed preload")
                 // Show loading overlay to prevent user interaction during preload
                 self.isPreloadingBatch = true
 
@@ -3827,17 +4168,14 @@ struct ContentView: View {
                     await self.preloadNextPhotosInBatchAsync()
                     await MainActor.run {
                         self.isPreloadingBatch = false
-                        print("📦 [setupNewBatch - TikTok] preloadNextPhotosInBatchAsync() completed")
                     }
 
                     // Call preloadNextPhotos() with reduced settings to prevent UI blocking
                     // but still provide smooth transitions between videos
                     await MainActor.run {
-                        print("📦 [setupNewBatch - TikTok] Calling preloadNextPhotos()")
                         let preloadStart = Date()
                         self.preloadNextPhotos()
-                        let preloadDuration = Date().timeIntervalSince(preloadStart)
-                        print("📦 [setupNewBatch - TikTok] preloadNextPhotos() returned in \(preloadDuration)s")
+                        // let preloadDuration = Date().timeIntervalSince(preloadStart) // Removed unused variable
                     }
                 }
             }
@@ -3847,8 +4185,8 @@ struct ContentView: View {
                 await self.preloadNextPhotosInBatchAsync()
             }
 
-            // Begin preheating for future batches
-            preloadNextPhotos()
+        // Begin preheating for future batches
+        preloadNextPhotos()
         }
 
         let batchEndTime = Date()
@@ -3856,40 +4194,32 @@ struct ContentView: View {
     }
     
     private func preloadNextPhotosInBatch() {
-        print("🔮 [preloadNextPhotosInBatch] ENTER - currentPhotoIndex=\(currentPhotoIndex), currentBatch.count=\(currentBatch.count)")
         // Preload more photos for TikTok mode since users swipe faster
         let preloadWindow = isTikTokMode ? 4 : 2  // Preload 4 photos for TikTok, 2 for normal mode
         let startIndex = currentPhotoIndex + 1
         let endIndex = min(startIndex + preloadWindow, currentBatch.count)
-        print("🔮 [preloadNextPhotosInBatch] Will preload range [\(startIndex)..<\(endIndex)] (window=\(preloadWindow))")
 
         for i in startIndex..<endIndex {
             let asset = currentBatch[i]
             let assetId = asset.localIdentifier
-            print("🔮 [preloadNextPhotosInBatch] Processing asset \(i): \(asset.mediaType == .video ? "video" : "image")")
 
             // Skip if already preloaded
             if preloadedImages[assetId] != nil || preloadedVideoAssets[assetId] != nil {
-                print("🔮 [preloadNextPhotosInBatch] Asset \(i) already preloaded, skipping")
                 continue
             }
 
             // Preload metadata
-            print("🔮 [preloadNextPhotosInBatch] Calling loadPhotoMetadata for asset \(i) - THIS MIGHT BLOCK")
             let metadataStart = Date()
             loadPhotoMetadata(for: asset)
             let metadataDuration = Date().timeIntervalSince(metadataStart)
-            print("🔮 [preloadNextPhotosInBatch] loadPhotoMetadata returned in \(metadataDuration)s")
 
             if asset.mediaType == .image {
-                print("🔮 [preloadNextPhotosInBatch] Asset \(i) is image, requesting image")
                 let options = PHImageRequestOptions()
                 options.deliveryMode = .highQualityFormat
                 options.isNetworkAccessAllowed = storagePreference.allowsNetworkAccess
                 options.resizeMode = .exact
                 options.isSynchronous = false // Async but high priority
 
-                print("🔮 [preloadNextPhotosInBatch] Calling imageManager.requestImage()")
                 imageManager.requestImage(
                     for: asset,
                     targetSize: getTargetSize(for: storagePreference),
@@ -3906,65 +4236,54 @@ struct ContentView: View {
                         }
                     }
                 }
-                print("🔮 [preloadNextPhotosInBatch] imageManager.requestImage() call initiated")
             } else if allowVideoPreloading {
-                print("🔮 [preloadNextPhotosInBatch] Asset \(i) is video, calling preloadVideo()")
                 preloadVideo(for: asset)
-                print("🔮 [preloadNextPhotosInBatch] preloadVideo() returned")
             } else {
-                print("🔮 [preloadNextPhotosInBatch] Asset \(i) is video but allowVideoPreloading=false, skipping")
             }
         }
-        print("🔮 [preloadNextPhotosInBatch] EXIT - finished processing all assets")
     }
 
     // Async version that prevents UI blocking
     private func preloadNextPhotosInBatchAsync() async {
-        print("🔮 [preloadNextPhotosInBatchAsync] ENTER - currentPhotoIndex=\(currentPhotoIndex), currentBatch.count=\(currentBatch.count)")
+        // Capture a snapshot of the current state on MainActor to avoid race conditions
+        // accessing @State properties from a background thread, which causes "Index out of range" crashes
+        let (batch, currentIndex, isTikTok) = await MainActor.run {
+            (self.currentBatch, self.currentPhotoIndex, self.isTikTokMode)
+        }
+        
         // Preload more photos for TikTok mode since users swipe faster
-        let preloadWindow = isTikTokMode ? 4 : 2  // Preload 4 photos for TikTok, 2 for normal mode
-        let startIndex = currentPhotoIndex + 1
-        let endIndex = min(startIndex + preloadWindow, currentBatch.count)
-        print("🔮 [preloadNextPhotosInBatchAsync] Will preload range [\(startIndex)..<\(endIndex)] (window=\(preloadWindow))")
+        let preloadWindow = isTikTok ? 4 : 2  // Preload 4 photos for TikTok, 2 for normal mode
+        let startIndex = currentIndex + 1
+        let endIndex = min(startIndex + preloadWindow, batch.count)
 
         for i in startIndex..<endIndex {
-            let asset = currentBatch[i]
+            let asset = batch[i]
             let assetId = asset.localIdentifier
-            print("🔮 [preloadNextPhotosInBatchAsync] Processing asset \(i): \(asset.mediaType == .video ? "video" : "image")")
 
             // Skip if already preloaded
             if await MainActor.run(body: { self.preloadedImages[assetId] != nil || self.preloadedVideoAssets[assetId] != nil }) {
-                print("🔮 [preloadNextPhotosInBatchAsync] Asset \(i) already preloaded, skipping")
                 continue
             }
 
             // Preload metadata (this is synchronous but fast)
-            print("🔮 [preloadNextPhotosInBatchAsync] Calling loadPhotoMetadata for asset \(i)")
             let metadataStart = Date()
             await MainActor.run {
                 self.loadPhotoMetadata(for: asset)
             }
             let metadataDuration = Date().timeIntervalSince(metadataStart)
-            print("🔮 [preloadNextPhotosInBatchAsync] loadPhotoMetadata completed in \(metadataDuration)s")
 
             if asset.mediaType == .image {
-                print("🔮 [preloadNextPhotosInBatchAsync] Asset \(i) is image, requesting image")
                 await preloadImageAsync(for: asset)
-                print("🔮 [preloadNextPhotosInBatchAsync] Image preload initiated for asset \(i)")
             } else if await MainActor.run(body: { self.allowVideoPreloading }) {
-                print("🔮 [preloadNextPhotosInBatchAsync] Asset \(i) is video, calling preloadVideo()")
                 await MainActor.run {
                     self.preloadVideo(for: asset)
                 }
-                print("🔮 [preloadNextPhotosInBatchAsync] preloadVideo() completed for asset \(i)")
             } else {
-                print("🔮 [preloadNextPhotosInBatchAsync] Asset \(i) is video but allowVideoPreloading=false, skipping")
             }
 
             // Add small delay between assets to prevent overwhelming the system
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
         }
-        print("🔮 [preloadNextPhotosInBatchAsync] EXIT - finished processing all assets")
     }
 
     // Async helper for image preloading
@@ -4044,9 +4363,7 @@ struct ContentView: View {
     }
 
     private func loadCurrentPhoto() {
-        print("📸 [loadCurrentPhoto] ENTER - currentPhotoIndex=\(currentPhotoIndex), currentBatch.count=\(currentBatch.count)")
         guard currentPhotoIndex < currentBatch.count else {
-            print("📸 [loadCurrentPhoto] Guard failed: currentPhotoIndex >= currentBatch.count")
             // If we're in the post-review → ad → continue flow, force continue screen
             if proceedToNextBatchAfterAd || showContinueScreenAfterAd || showingAdModal || showingContinueScreen || justWatchedAd {
                 showingCheckpointScreen = false
@@ -4062,22 +4379,18 @@ struct ContentView: View {
         let asset = currentBatch[currentPhotoIndex]
         let assetId = asset.localIdentifier
         let isVideo = asset.mediaType == .video
-        print("📸 [loadCurrentPhoto] Asset: mediaType=\(isVideo ? "video" : "image"), localId=\(assetId)")
         
         // Check if image/video is already loaded for this asset BEFORE updating currentAsset
         // This prevents reloading if we're already showing this asset
         let previousAssetId = currentAsset?.localIdentifier
         let isImageAlreadyLoaded = !isVideo && currentImage != nil && previousAssetId == assetId
         let isVideoAlreadyLoaded = isVideo && currentVideoPlayer != nil && previousAssetId == assetId
-        print("📸 [loadCurrentPhoto] Already loaded check: isImageAlreadyLoaded=\(isImageAlreadyLoaded), isVideoAlreadyLoaded=\(isVideoAlreadyLoaded)")
         
         // Clean up previous video player when switching assets, but NOT if we're currently loading a video
         // (video loading sets its own state and cleanup would reset it)
         if previousAssetId != nil && previousAssetId != assetId && !isVideoLoading {
-            print("📸 [loadCurrentPhoto] Switching assets, cleaning up current video player")
             cleanupCurrentVideoPlayer()
         } else if isVideoLoading {
-            print("📸 [loadCurrentPhoto] Skipping cleanup - video is currently loading")
         }
 
         // Update current asset info (but don't override isCurrentAssetVideo if already loading a video)
@@ -4086,29 +4399,23 @@ struct ContentView: View {
         isCurrentAssetVideo = isVideo
         }
         
-        print("📸 [loadCurrentPhoto] Loading metadata")
         if let cachedMetadata = metadataCache[assetId] {
             currentPhotoDate = cachedMetadata.date
             currentPhotoLocation = cachedMetadata.locationDescription
-            print("📸 [loadCurrentPhoto] Using cached metadata")
         } else {
             currentPhotoDate = asset.creationDate
             currentPhotoLocation = nil
-            print("📸 [loadCurrentPhoto] Using asset creation date")
         }
         
         // If already loaded, skip reloading
         if isImageAlreadyLoaded || isVideoAlreadyLoaded {
-            print("📸 [loadCurrentPhoto] Asset already loaded, skipping reload")
             // Already loaded, just ensure metadata is set
             loadPhotoMetadata(for: asset)
             return
         }
         
         // Check if we have a preloaded image/video - use immediately for instant display
-        print("📸 [loadCurrentPhoto] Checking for preloaded content")
         if let preloadedImage = preloadedImages.removeValue(forKey: asset.localIdentifier) {
-            print("📸 [loadCurrentPhoto] Using preloaded IMAGE (isDegraded=\(preloadedImage.isDegraded))")
             currentImage = preloadedImage.image
             isCurrentImageLowQuality = preloadedImage.isDegraded
             
@@ -4138,7 +4445,6 @@ struct ContentView: View {
                 dragOffset = .zero
                 }
             } else {
-                print("📸 [loadCurrentPhoto] Skipping switchToVideo - video already loading for \(assetId)")
             }
         } else {
             // Load normally if not preloaded
@@ -4220,12 +4526,9 @@ struct ContentView: View {
     }
     
     private func loadImage(for asset: PHAsset) {
-        print("🖼️ [loadImage] ENTER - assetId=\(asset.localIdentifier), storagePreference=\(storagePreference)")
         let targetSize = getTargetSize(for: storagePreference)
-        print("🖼️ [loadImage] Target size: \(targetSize)")
         
         if storagePreference == .highQuality {
-            print("🖼️ [loadImage] Using highQuality mode")
             let highQualityOptions = getImageOptions(for: storagePreference)
             imageManager.requestImage(
                 for: asset,
@@ -4253,7 +4556,7 @@ struct ContentView: View {
 
                         // Clear first video loading state since image is now ready
                         self.isLoadingFirstVideo = false
-
+                        
                         // Reset drag offset immediately to prevent diagonal offset when image appears
                         // Note: dragTranslation is @GestureState and resets automatically when gesture ends
                         var transaction = Transaction()
@@ -4295,19 +4598,19 @@ struct ContentView: View {
                         if !self.storagePreference.allowsNetworkAccess && isInCloud {
                             // Only show network warning if we haven't shown it already in this session
                             if !self.hasShownNetworkWarning {
-                                self.showingNetworkWarning = true
+                            self.showingNetworkWarning = true
                                 self.hasShownNetworkWarning = true
                             }
                             self.currentImage = self.createPlaceholderImage()
                             self.isCurrentImageLowQuality = true
                             return
                         }
-
+                        
                         self.currentImage = image
 
                         // Clear first video loading state since image is now ready
                         self.isLoadingFirstVideo = false
-
+                        
                         // Reset drag offset immediately to prevent diagonal offset when image appears
                         // Note: dragTranslation is @GestureState and resets automatically when gesture ends
                         var transaction = Transaction()
@@ -4315,7 +4618,7 @@ struct ContentView: View {
                         withTransaction(transaction) {
                             self.dragOffset = .zero
                         }
-
+                        
                         // Check if degraded and upgrade to high quality if needed
                         if isDegraded {
                             self.isCurrentImageLowQuality = true
@@ -4371,7 +4674,7 @@ struct ContentView: View {
                         if !options.isNetworkAccessAllowed && isInCloud {
                             // Only show network warning if we haven't shown it already in this session
                             if !self.hasShownNetworkWarning {
-                                self.showingNetworkWarning = true
+                            self.showingNetworkWarning = true
                                 self.hasShownNetworkWarning = true
                             }
                             self.currentImage = self.createPlaceholderImage()
@@ -4617,19 +4920,16 @@ struct ContentView: View {
                     }
                 }
     }
-
+    
     private func preloadNextPhotos() {
         // CRITICAL: All state access must happen on main thread
         // This function is always called from main thread, so we capture state here
-                print("🌊 [preloadNextPhotos] ENTER - isPreloading=\(self.isPreloading)")
         guard !isPreloading else {
-                    print("🌊 [preloadNextPhotos] Early exit: already preloading")
                     return
                 }
 
-                print("🌊 [preloadNextPhotos] Setting isPreloading=true")
         isPreloading = true
-
+        
         // Capture ALL state values on main thread before dispatching
         let preference = storagePreference
         let selectedContentType = selectedContentType
@@ -4641,40 +4941,40 @@ struct ContentView: View {
         let photosSnapshot = photos  // Capture photos array
         let preheatedIds = preheatedAssetIds  // Capture for sorting
         
-                print("🌊 [preloadNextPhotos] tikTokMode=\(tikTokMode), preference=\(preference)")
 
-                let shouldPreloadVideoAsset: (PHAsset) -> Bool = { asset in
-                    guard asset.mediaType == .video else { return false }
-                    if tikTokMode { return true }
-                    return selectedContentType == .videos
-                }
+        let shouldPreloadVideoAsset: (PHAsset) -> Bool = { asset in
+            guard asset.mediaType == .video else { return false }
+            if tikTokMode { return true }
+            return selectedContentType == .videos
+        }
 
-                let qos: DispatchQoS.QoSClass = preference == .highQuality ? .userInitiated : .utility
+        let qos: DispatchQoS.QoSClass = preference == .highQuality ? .userInitiated : .utility
 
         // Move heavy work to background thread - NO state access after this point
-                DispatchQueue.global(qos: qos).async {
+        DispatchQueue.global(qos: qos).async {
             var preloadCount = tikTokMode ? 8 : 8
             var maxVideoPreload = tikTokMode ? 2 : 2
 
-                    var videoPreloaded = 0
-                    var assetsToPreheat: [PHAsset] = []
-
+            var videoPreloaded = 0
+            var assetsToPreheat: [PHAsset] = []
+            
             // Use captured values, not self.state
             let currentOverallIndex = currentBatchIndex * currentBatchSize + currentPhotoIdx
-                    let startIndex = currentOverallIndex + 1
+            let startIndex = max(0, currentOverallIndex + 1)
             let endIndex = min(startIndex + preloadCount, photosSnapshot.count)
-
-            if startIndex < photosSnapshot.count {
+            
+            // Ensure valid range before accessing array
+            if startIndex < endIndex && startIndex < photosSnapshot.count {
                 assetsToPreheat = Array(photosSnapshot[startIndex..<endIndex])
-                    }
-
-                    guard !assetsToPreheat.isEmpty else {
-                        DispatchQueue.main.async {
-                            self.isPreloading = false
-                        }
-                        return
-                    }
-
+            }
+            
+            guard !assetsToPreheat.isEmpty else {
+                DispatchQueue.main.async {
+                    self.isPreloading = false
+                }
+                return
+            }
+            
             // Sort using captured preheated IDs
                     if preference == .storageOptimized {
                         assetsToPreheat.sort { asset1, asset2 in
@@ -4687,18 +4987,18 @@ struct ContentView: View {
                     }
 
             // These are thread-safe as they don't modify state
-                    let targetSize = self.getTargetSize(for: preference)
-                    let options = self.getImageOptions(for: preference)
-
+            let targetSize = self.getTargetSize(for: preference)
+            let options = self.getImageOptions(for: preference)
+            
             // Image preheating - PHCachingImageManager is thread-safe
-                    let imageAssetsToPreheat = assetsToPreheat.filter { $0.mediaType == .image }
-                    if !imageAssetsToPreheat.isEmpty {
-                        self.cachingManager.startCachingImages(
-                            for: imageAssetsToPreheat,
-                            targetSize: targetSize,
-                            contentMode: .aspectFit,
-                            options: options
-                        )
+            let imageAssetsToPreheat = assetsToPreheat.filter { $0.mediaType == .image }
+            if !imageAssetsToPreheat.isEmpty {
+                self.cachingManager.startCachingImages(
+                    for: imageAssetsToPreheat,
+                    targetSize: targetSize,
+                    contentMode: .aspectFit,
+                    options: options
+                )
                 // Update preheated IDs on main thread
                 let newIds = Set(imageAssetsToPreheat.map { $0.localIdentifier })
                 DispatchQueue.main.async {
@@ -4707,37 +5007,37 @@ struct ContentView: View {
             }
 
             // Process assets - dispatch state-accessing functions to main thread
-                    for asset in assetsToPreheat {
+            for asset in assetsToPreheat {
                 // prefetchBasicMetadata dispatches internally to background, safe to call
-                        self.prefetchBasicMetadata(for: asset)
+                self.prefetchBasicMetadata(for: asset)
                 
                 // loadPhotoMetadata accesses state - must call on main
                 DispatchQueue.main.async {
-                        self.loadPhotoMetadata(for: asset)
+                self.loadPhotoMetadata(for: asset)
                 }
                 
-                        if asset.mediaType == .image {
+                if asset.mediaType == .image {
                     // preloadImage accesses state - must call on main
                     DispatchQueue.main.async {
-                                self.preloadImage(for: asset)
-                            }
-                        } else if videoPreloadingAllowed && videoPreloaded < maxVideoPreload && shouldPreloadVideoAsset(asset) {
-                            videoPreloaded += 1
+                        self.preloadImage(for: asset)
+                    }
+                } else if videoPreloadingAllowed && videoPreloaded < maxVideoPreload && shouldPreloadVideoAsset(asset) {
+                    videoPreloaded += 1
                     // preloadVideo accesses state - must call on main
                     DispatchQueue.main.async {
-                            self.preloadVideo(for: asset)
-                            }
+                    self.preloadVideo(for: asset)
+                }
                         }
                 
                 // Small delay between assets to prevent overwhelming
                 Thread.sleep(forTimeInterval: 0.05)
-                    }
-
-                    DispatchQueue.main.async {
-                        self.isPreloading = false
-                        if self.needsVideoPreloadRestart {
-                            self.needsVideoPreloadRestart = false
-                            self.preloadNextPhotos()
+            }
+            
+            DispatchQueue.main.async {
+                self.isPreloading = false
+                if self.needsVideoPreloadRestart {
+                    self.needsVideoPreloadRestart = false
+                    self.preloadNextPhotos()
                 }
             }
         }
@@ -4900,13 +5200,11 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 // CRITICAL: Don't loop if view is dismissing - prevents background audio
                 if self.isViewDismissing {
-                    print("🔄 [LoopObserver] ⚠️ View is dismissing - NOT looping")
                     return
                 }
                 
                 // Only loop if this is still the current player
                 guard player === self.currentVideoPlayer else {
-                    print("🔄 [LoopObserver] Ignoring loop - player is no longer current")
                     return
                 }
                 
@@ -4914,8 +5212,8 @@ struct ContentView: View {
                 player.isMuted = self.isVideoMuted
                 player.volume = self.isVideoMuted ? 0.0 : 1.0
                 
-                player.seek(to: .zero)
-                player.play()
+            player.seek(to: .zero)
+            player.play()
             }
         }
         
@@ -4931,7 +5229,6 @@ struct ContentView: View {
     
     private func cleanupPlayer(_ player: AVPlayer?) {
         guard let player = player else { return }
-        print("🧹 [cleanupPlayer] Cleaning up player - rate: \(player.rate), volume: \(player.volume), isPlaying: \(player.rate > 0)")
 
         // Immediately stop playback and mute
         player.pause()
@@ -4953,14 +5250,11 @@ struct ContentView: View {
         // Remove loop observer
         removeLoopObserver(for: player)
 
-        print("🧹 [cleanupPlayer] Player cleanup complete - rate: \(player.rate)")
     }
     
     private func cleanupCurrentVideoPlayer() {
-        print("🧹 [cleanupCurrentVideoPlayer] ENTER - currentVideoPlayer=\(currentVideoPlayer != nil ? "exists" : "nil")")
         cleanupPlayer(currentVideoPlayer)
         currentVideoPlayer = nil
-        print("🧹 [cleanupCurrentVideoPlayer] EXIT - player cleaned up")
         isCurrentAssetVideo = false
     }
     
@@ -4980,17 +5274,14 @@ struct ContentView: View {
     // Atomic video switching: cleanup old player, create new player from preloaded asset or load fresh
     private func switchToVideo(asset: PHAsset) {
         let assetId = asset.localIdentifier
-        print("🎥 [switchToVideo] Switching to video: \(assetId)")
         
         // CRITICAL: Abort if view is dismissing to prevent background audio
         if isViewDismissing {
-            print("🎥 [switchToVideo] ⚠️ View is dismissing - ABORTING")
             return
         }
         
         // 1. Stop and cleanup current player FIRST (atomic operation)
         if let oldPlayer = currentVideoPlayer {
-            print("🎥 [switchToVideo] Cleaning up old player")
             cleanupPlayer(oldPlayer)
         }
         currentVideoPlayer = nil
@@ -4999,7 +5290,6 @@ struct ContentView: View {
         // 2. Get or load asset
         if let preloadedAsset = preloadedVideoAssets[assetId] {
             // Use preloaded asset - but still need to create player on background thread
-            print("🎥 [switchToVideo] Using preloaded asset - creating player on background thread")
             preloadedVideoAssets.removeValue(forKey: assetId)
             
             // Show loading state immediately while player is created
@@ -5024,11 +5314,9 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     // Check if still valid
                     guard !self.isViewDismissing else {
-                        print("🎥 [switchToVideo] ⚠️ View dismissed during player creation - ABORTING")
                         return
                     }
                     guard self.isAssetCurrentlyDisplayed(assetId) else {
-                        print("🎥 [switchToVideo] Asset no longer displayed - ABORTING")
                         return
                     }
                     
@@ -5049,7 +5337,6 @@ struct ContentView: View {
             }
         } else {
             // Not preloaded - set loading state IMMEDIATELY before async load
-            print("🎥 [switchToVideo] Asset not preloaded, setting loading state and loading...")
             // CRITICAL: Set isCurrentAssetVideo = true so the view shows video loading placeholder
             // Without this, the view thinks it's an image and shows the wrong placeholder
             isCurrentAssetVideo = true
@@ -5065,14 +5352,14 @@ struct ContentView: View {
     private func configurePlayer(for avAsset: AVAsset) -> AVPlayer {
         let playerItem = AVPlayerItem(asset: avAsset)
         playerItem.preferredForwardBufferDuration = 2.0
-
+        
         let player = AVPlayer(playerItem: playerItem)
         // Always mute and pause players by default to prevent any audio leakage
         player.isMuted = true
         player.volume = 0.0
         player.actionAtItemEnd = .none
         player.automaticallyWaitsToMinimizeStalling = false
-
+        
         player.seek(to: .zero)
         player.pause()
         addLoopObserver(for: player)
@@ -5080,17 +5367,14 @@ struct ContentView: View {
     }
     
     private func startVideoPlayback(_ player: AVPlayer) {
-        print("▶️ [startVideoPlayback] Starting playback for player")
 
         // CRITICAL: Abort if view is dismissing to prevent background audio
         if isViewDismissing {
-            print("▶️ [startVideoPlayback] ⚠️ View is dismissing - ABORTING playback")
             return
         }
 
         // Double-check that this is the current player before starting playback
         guard player === currentVideoPlayer else {
-            print("▶️ [startVideoPlayback] WARNING: Attempted to start playback on non-current player - aborting")
             return
         }
 
@@ -5108,10 +5392,9 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 guard player === self.currentVideoPlayer, !self.isViewDismissing else { return }
         player.play()
-                print("▶️ [startVideoPlayback] Async play() called")
             }
         }
-
+        
         // Retry mechanisms in case first play doesn't work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             guard player === self.currentVideoPlayer, !self.isViewDismissing else { return }
@@ -5124,7 +5407,7 @@ struct ContentView: View {
                 }
             }
         }
-
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
             guard player === self.currentVideoPlayer, !self.isViewDismissing else { return }
             if player.rate == 0 {
@@ -5137,7 +5420,6 @@ struct ContentView: View {
             }
         }
 
-        print("▶️ [startVideoPlayback] Playback initiated for current video (muted: \(isVideoMuted))")
     }
     
     // MARK: - Skip Button Timer Management
@@ -5153,7 +5435,6 @@ struct ContentView: View {
                 // Only show if still loading
                 if self.isVideoLoading || self.isCurrentImageLowQuality || self.isDownloadingHighQuality {
                     self.showSkipButton = true
-                    print("⏭️ [SkipButton] Showing skip button after 3 seconds of loading")
                 }
             }
         }
@@ -5168,8 +5449,6 @@ struct ContentView: View {
     }
     
     private func skipToNextPhoto() {
-        print("⏭️ [SkipButton] User tapped skip - moving to next photo")
-        print("⏭️ [SkipButton] Current state: currentPhotoIndex=\(currentPhotoIndex), batchCount=\(currentBatch.count), swipedCount=\(swipedPhotos.count)")
         
         // Reset loading states FIRST
         videoLoadFailed = false
@@ -5183,11 +5462,9 @@ struct ContentView: View {
         
         // Move to next photo (without marking current as processed)
         let nextIndex = currentPhotoIndex + 1
-        print("⏭️ [SkipButton] Next index would be: \(nextIndex)")
         
         if nextIndex >= currentBatch.count {
             // At end of batch
-            print("⏭️ [SkipButton] At end of batch, showing review screen")
             if !swipedPhotos.isEmpty {
                 showReviewScreen()
             } else {
@@ -5198,7 +5475,6 @@ struct ContentView: View {
         } else {
             // Move to next photo in batch
             currentPhotoIndex = nextIndex
-            print("⏭️ [SkipButton] Moving to index \(currentPhotoIndex)")
             
             // Load the next photo
             let nextAsset = currentBatch[currentPhotoIndex]
@@ -5227,56 +5503,46 @@ struct ContentView: View {
             }
         }
         
-        print("⏭️ [SkipButton] Skip completed")
     }
     
     private func requestVideoAsset(for asset: PHAsset, storeOnly: Bool) {
         assert(Thread.isMainThread, "Video requests must be scheduled on the main thread.")
-
+        
         let assetId = asset.localIdentifier
-        print("🎥 [requestVideoAsset] ENTER - assetId=\(assetId), storeOnly=\(storeOnly), isTikTokMode=\(isTikTokMode)")
         if isTikTokMode {
         }
         // Defer metadata prefetching for videos to reduce initial load time
         // Metadata will be loaded when needed later
         // prefetchBasicMetadata(for: asset)
-        print("🎥 [requestVideoAsset] Metadata prefetching deferred for faster video loading")
         
         if storeOnly, preloadedVideoAssets[assetId] != nil {
-            print("🎥 [requestVideoAsset] Early exit: storeOnly=true and already preloaded")
             return
         }
         
         if inflightVideoRequests.contains(assetId) {
-            print("🎥 [requestVideoAsset] Early exit: already in-flight")
             return
         }
 
         // Limit concurrent video requests to prevent AVFoundation overload
         let maxConcurrentVideos = isTikTokMode ? 2 : 3  // Allow 2 concurrent videos for TikTok mode preloading
         if inflightVideoRequests.count >= maxConcurrentVideos {
-            print("🎥 [requestVideoAsset] Early exit: too many concurrent requests (\(inflightVideoRequests.count) >= \(maxConcurrentVideos))")
             return
         }
         
         if !storeOnly {
             if currentVideoPlayer != nil && isAssetCurrentlyDisplayed(assetId) {
-                print("🎥 [requestVideoAsset] Early exit: video already displayed")
                 return
             }
             if preloadedVideoAssets[assetId] != nil {
-                print("🎥 [requestVideoAsset] Early exit: already preloaded")
                 return
             }
         }
         
-        print("🎥 [requestVideoAsset] Adding to inflightVideoRequests")
         inflightVideoRequests.insert(assetId)
         
         // CRITICAL: Set loading state IMMEDIATELY (synchronously) before async call
         // This ensures UI shows spinner/progress indicator right away and remains interactive
         if !storeOnly && isAssetCurrentlyDisplayed(assetId) {
-            print("🎥 [requestVideoAsset] Setting isVideoLoading=true IMMEDIATELY")
             isVideoLoading = true
             videoLoadStartTime = Date()
             videoLoadFailed = false
@@ -5285,12 +5551,10 @@ struct ContentView: View {
         
         // Create timeout work item (10 seconds)
         // Note: ContentView is a struct, so we don't need weak reference
-        print("🎥 [requestVideoAsset] Creating timeout work item")
         let timeoutWorkItem = DispatchWorkItem {
             Task { @MainActor in
                 // Only trigger timeout if this is still the current asset being displayed
                 if self.isAssetCurrentlyDisplayed(assetId) && self.isVideoLoading {
-                    print("🎥 [requestVideoAsset] TIMEOUT - Video failed to load within 10s")
                     self.videoLoadFailed = true
                     self.isVideoLoading = false
                     self.isLoadingFirstVideo = false // Clear loading state on timeout
@@ -5308,7 +5572,6 @@ struct ContentView: View {
         // CRITICAL FIX: Dispatch PHImageManager call to background queue to prevent main thread blocking
         // PRIORITY: First try LOCAL ONLY (no network) for instant playback
         // If local fails, fall back to network download
-        print("🎥 [requestVideoAsset] Dispatching PHImageManager.requestAVAsset() - trying LOCAL first")
         let requestStartTime = Date()
         
         // Capture options on main thread before dispatching to background
@@ -5322,28 +5585,22 @@ struct ContentView: View {
                 
                 if let avAsset = avAsset {
                     // SUCCESS: Video is available locally - use it immediately
-                    print("🎥 [requestVideoAsset] ✅ LOCAL video loaded in \(requestDuration)s")
                     self.handleVideoAssetLoaded(avAsset: avAsset, assetId: assetId, storeOnly: storeOnly, isTikTokMode: isTikTokMode)
                 } else {
                     // LOCAL FAILED: Video is in iCloud - try with network
-                    print("🎥 [requestVideoAsset] ⚠️ Local not available, trying iCloud download...")
                     
                     PHImageManager.default().requestAVAsset(forVideo: asset, options: networkOptions) { avAsset, _, error in
                         let totalDuration = Date().timeIntervalSince(requestStartTime)
-                        print("🎥 [requestVideoAsset] iCloud callback received after \(totalDuration)s")
                         
                         if let avAsset = avAsset {
-                            print("🎥 [requestVideoAsset] ✅ iCloud video loaded")
                             self.handleVideoAssetLoaded(avAsset: avAsset, assetId: assetId, storeOnly: storeOnly, isTikTokMode: isTikTokMode)
                         } else {
-                            print("🎥 [requestVideoAsset] ❌ Both local and iCloud failed")
                             self.handleVideoAssetFailed(assetId: assetId)
                         }
                     }
                 }
             }
         }
-        print("🎥 [requestVideoAsset] EXIT - PHImageManager request dispatched to background queue")
     }
     
     // Helper function to handle successful video asset load
@@ -5354,15 +5611,14 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 // Cancel timeout and remove from in-flight
             self.videoLoadTimeouts.removeValue(forKey: assetId)?.cancel()
-            self.inflightVideoRequests.remove(assetId)
+                self.inflightVideoRequests.remove(assetId)
                 
                 if self.isViewDismissing { return }
                 self.preloadedVideoAssets[assetId] = avAsset
-                print("🎥 [requestVideoAsset] ✅ Preloaded asset stored")
                 }
-                return
-            }
-            
+                    return
+                }
+                
         // For displayed video: Create player on BACKGROUND thread to prevent main thread blocking
         let configureStart = Date()
         let playerItem = AVPlayerItem(asset: avAsset)
@@ -5375,7 +5631,6 @@ struct ContentView: View {
         player.seek(to: .zero)
         player.pause()
         let configureDuration = Date().timeIntervalSince(configureStart)
-        print("🎥 [requestVideoAsset - Background] Player configured in \(configureDuration)s")
         
         // Dispatch ALL state access to main thread
             DispatchQueue.main.async {
@@ -5384,12 +5639,10 @@ struct ContentView: View {
             self.inflightVideoRequests.remove(assetId)
             
             if self.isViewDismissing {
-                print("🎥 [requestVideoAsset - Main Thread] ⚠️ View is dismissing - ABORTING")
                 return
             }
             
             guard self.isAssetCurrentlyDisplayed(assetId) else {
-                print("🎥 [requestVideoAsset - Main Thread] Asset is no longer displayed - ABORTING")
                 return
             }
             
@@ -5408,7 +5661,7 @@ struct ContentView: View {
                     self.cancelSkipButtonTimer(loadingCompleted: true)
                     
                     self.startVideoPlayback(player)
-            
+                    
             // Clear first video loading state
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             self.isLoadingFirstVideo = false
@@ -5421,7 +5674,6 @@ struct ContentView: View {
                         self.dragOffset = .zero
                     }
                     
-            print("🎥 [requestVideoAsset - Main Thread] ✅ Playback started")
             
             // DEFER preloading to let UI settle first - prevents blocking after video loads
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -5430,9 +5682,9 @@ struct ContentView: View {
                         self.allowVideoPreloading = true
                 }
                 if !self.isTikTokMode && !self.isPreloading {
-                                self.preloadNextPhotos()
-                }
-            }
+                            self.preloadNextPhotos()
+                        }
+                    }
         }
     }
     
@@ -5467,17 +5719,14 @@ struct ContentView: View {
         
         // Skip if already preloaded or in-flight (main thread checks - safe)
         if preloadedVideoAssets[assetId] != nil {
-            print("🎥 [preloadAsync] Skipping \(assetId.prefix(8))... - already preloaded")
             return
         }
         if inflightVideoRequests.contains(assetId) {
-            print("🎥 [preloadAsync] Skipping \(assetId.prefix(8))... - already in-flight")
             return
         }
         
         // Mark as in-flight on main thread before dispatching
         inflightVideoRequests.insert(assetId)
-        print("🎥 [preloadAsync] Starting preload for \(assetId.prefix(8))...")
         
         // Run PHImageManager on background queue - never blocks main thread
         DispatchQueue.global(qos: .utility).async {
@@ -5491,7 +5740,6 @@ struct ContentView: View {
                 // ALL state access must be dispatched to main thread
                 if let avAsset = avAsset {
                     // Local video available - store it
-                    print("🎥 [preloadAsync] ✅ Local video found for \(assetId.prefix(8))...")
         DispatchQueue.main.async {
                         self.inflightVideoRequests.remove(assetId)
                         if !self.isViewDismissing {
@@ -5500,7 +5748,6 @@ struct ContentView: View {
                     }
                 } else {
                     // Not local - try iCloud download (still on background)
-                    print("🎥 [preloadAsync] ☁️ Downloading from iCloud: \(assetId.prefix(8))...")
                     
                     let iCloudOptions = PHVideoRequestOptions()
                     iCloudOptions.isNetworkAccessAllowed = true
@@ -5515,10 +5762,8 @@ struct ContentView: View {
                             if self.isViewDismissing { return }
                             
                             if let avAsset = avAsset {
-                                print("🎥 [preloadAsync] ✅ iCloud video downloaded for \(assetId.prefix(8))...")
                                 self.preloadedVideoAssets[assetId] = avAsset
                             } else {
-                                print("🎥 [preloadAsync] ❌ Failed to load video \(assetId.prefix(8))...")
                             }
                         }
                     }
@@ -5586,9 +5831,9 @@ struct ContentView: View {
     
     private func applyMetadata(_ metadata: ContentView.AssetMetadata, to assetID: String) {
         metadataCache[assetID] = metadata
-
+        
         guard currentAsset?.localIdentifier == assetID else { return }
-
+        
         currentPhotoDate = metadata.date
         currentPhotoLocation = metadata.locationDescription
     }
@@ -5616,11 +5861,11 @@ struct ContentView: View {
     private func prefetchBasicMetadata(for asset: PHAsset) {
         // Move synchronous metadata access to background thread to avoid blocking UI
         DispatchQueue.global(qos: .utility).async {
-            _ = asset.creationDate
-            _ = asset.location
-            _ = asset.duration
-            _ = asset.isFavorite
-            _ = asset.mediaSubtypes
+        _ = asset.creationDate
+        _ = asset.location
+        _ = asset.duration
+        _ = asset.isFavorite
+        _ = asset.mediaSubtypes
         }
     }
     
@@ -5647,23 +5892,18 @@ struct ContentView: View {
             }
             return
         }
-
+        
+        // Smarter Paywall Trigger:
+        // Instead of every 30 swipes, we trigger based on Happiness Score
         let totalSwipes = totalSwipesUsed()
-        if totalSwipes <= 0 {
-            return
-        }
-
-        let milestone = totalSwipes / 30
-
-        if milestone < lastPaywallSwipeMilestone {
-            lastPaywallSwipeMilestone = milestone
-        }
-
-        if milestone > lastPaywallSwipeMilestone {
+        
+        // Still show at specific major milestones if not already shown recently
+        let majorMilestones = [50, 100, 250, 500]
+        let isAtMajorMilestone = majorMilestones.contains { totalSwipes == $0 }
+        
+        if isAtMajorMilestone || happinessEngine.shouldShowPaywall() {
             if presentPaywall(delay: 0.3) {
-                lastPaywallSwipeMilestone = milestone
-            } else if showingSubscriptionStatus {
-                lastPaywallSwipeMilestone = milestone
+                happinessEngine.recordPaywallShown()
             }
         }
     }
@@ -5673,14 +5913,17 @@ struct ContentView: View {
 
         // Don't show paywall when opening categories
         guard !isOpeningCategory else { return }
-
-        let now = Date()
-        if !force, let last = lastAppOpenPaywallDate, now.timeIntervalSince(last) < 3 {
+        
+        let now = Date().timeIntervalSinceReferenceDate
+        // Use a 24-hour cooldown for app-open paywall to avoid overloading the user
+        let cooldown: Double = 24 * 60 * 60
+        
+        if !force && (now - lastAppOpenPaywallTime) < cooldown {
             return
         }
-
+        
         if presentPaywall(delay: 0.6) {
-            lastAppOpenPaywallDate = now
+            lastAppOpenPaywallTime = now
         }
     }
     
@@ -5821,7 +6064,7 @@ struct ContentView: View {
         var currentAsset = currentBatch[currentPhotoIndex]
         let nextIndex = currentPhotoIndex + 1
         
-        // Check if we've completed a batch of 10 photos
+        // Check if we've completed a batch of 15 photos
         if swipedPhotos.count >= batchSize {
             // Clear current media before showing review screen
             cleanupCurrentVideoPlayer()
@@ -5833,6 +6076,7 @@ struct ContentView: View {
         
         // Now increment index FIRST to prepare for next photo
         currentPhotoIndex = nextIndex
+        updateFavoriteState()
         
         // Reset dragOffset immediately - exit animation from handleSwipe should be complete by now
         // Note: dragTranslation is @GestureState and resets automatically when gesture ends
@@ -5871,6 +6115,7 @@ struct ContentView: View {
         guard currentPhotoIndex < currentBatch.count else {
             // Reset to safe index
             currentPhotoIndex = max(0, currentBatch.count - 1)
+            updateFavoriteState()
             showReviewScreen()
             return
         }
@@ -5997,6 +6242,13 @@ struct ContentView: View {
         // Create a set of valid asset IDs for faster lookup (O(1) vs O(n))
         let startIndex = max(0, currentOverallIndex)
         let endIndex = min(currentOverallIndex + maxPreloadCount, photos.count)
+        
+        // Guard against invalid range (startIndex must be <= endIndex) to prevent crash
+        guard startIndex < endIndex, !photos.isEmpty else {
+            // No valid range to process - skip cleanup
+            return
+        }
+        
         let validAssetIds = Set(photos[startIndex..<endIndex].map { $0.localIdentifier })
         
         // Remove preloaded images that are outside the window
@@ -6057,10 +6309,11 @@ struct ContentView: View {
         var shouldKeepIds = Set<String>()
         
         // Calculate the range of photos to keep preheated
-        let startKeepIndex = currentOverallIndex
+        let startKeepIndex = max(0, currentOverallIndex)
         let endKeepIndex = min(currentOverallIndex + maxPreloadCount, photos.count)
         
-        if startKeepIndex < photos.count {
+        // Ensure valid range before accessing photos array
+        if startKeepIndex < endKeepIndex && startKeepIndex < photos.count {
             let assetsToKeep = photos[startKeepIndex..<endKeepIndex]
             shouldKeepIds = Set(assetsToKeep.map { $0.localIdentifier })
         }
@@ -6166,6 +6419,7 @@ struct ContentView: View {
         
         // Go back to the previous photo
         currentPhotoIndex -= 1
+        updateFavoriteState()
         
         // Remove photo from processed IDs for current filter so it can be shown again
         processedPhotoIds[selectedFilter]?.remove(lastSwipedPhoto.asset.localIdentifier)
@@ -6265,6 +6519,10 @@ struct ContentView: View {
                 processedPhotoIds[selectedFilter, default: []].insert(swipedPhoto.asset.localIdentifier)
                 globalProcessedPhotoIds.insert(swipedPhoto.asset.localIdentifier)
             }
+            
+            // Record happiness event for reviewing a batch even if nothing was deleted
+            happinessEngine.record(.completeBatch)
+            
             invalidatePhotoCountCache()
             
             // Track photos processed today
@@ -6387,16 +6645,11 @@ struct ContentView: View {
                         // Refresh StreakManager stats to update photo counts
                         self.streakManager.refreshStats()
 
-                        // Request App Store review after first batch completion
-                        if wasFirstBatch && !UserDefaults.standard.bool(forKey: self.firstBatchReviewShownKey) {
-                            // Delay slightly to ensure UI is stable after batch completion
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                                    SKStoreReviewController.requestReview(in: windowScene)
-                                    UserDefaults.standard.set(true, forKey: self.firstBatchReviewShownKey)
-                                }
-                            }
-                        }
+                        // Track happiness event for batch completion (this may trigger review prompt)
+                        self.happinessEngine.record(.completeBatch)
+                        
+                        // Track significant deletion event
+                        self.happinessEngine.record(.deletePhotos)
                     }
                     
                     // If no photos remain for this filter, mark as completed
@@ -6638,10 +6891,10 @@ struct ContentView: View {
     }
     
     // Swift's SystemRandomNumberGenerator is cryptographically secure and appropriate for photo shuffling
-
+    
     private func filterPhotos(_ loadedPhotos: [PHAsset]) -> [PHAsset] {
         var filteredPhotos = loadedPhotos
-
+        
         // Filter based on selected filter
         switch selectedFilter {
         case .random:
@@ -6661,6 +6914,14 @@ struct ContentView: View {
                 // Check if the asset is in the screenshots album
                 return asset.mediaSubtypes.contains(.photoScreenshot)
             }
+            // Sort by oldest first if setting is enabled
+            if screenshotSortOrder == ScreenshotSortOrder.oldestFirst.rawValue {
+                filteredPhotos.sort { (asset1, asset2) -> Bool in
+                    let date1 = asset1.creationDate ?? Date.distantFuture
+                    let date2 = asset2.creationDate ?? Date.distantFuture
+                    return date1 < date2
+                }
+            }
         case .year(let year):
             filteredPhotos = filteredPhotos.filter { asset in
                 let assetYear = asset.creationDate?.year
@@ -6673,8 +6934,8 @@ struct ContentView: View {
             filteredPhotos = filteredPhotos.filter { asset in
                 return asset.isFavorite
             }
-            case .shortVideos:
-                // Filter for short videos ≤10 seconds (Brainrot Reel Style)
+        case .shortVideos:
+            // Filter for short videos ≤10 seconds (Brainrot Reel Style)
                 // Note: First activation is handled separately in resetAndReload()
                 // This code path is only for subsequent activations or non-first loads
                 
@@ -6682,7 +6943,7 @@ struct ContentView: View {
                 let allVideos = filteredPhotos.filter { $0.mediaType == .video }
                 
                 // Second pass: check duration for videos only
-                var shortVideos: [PHAsset] = []
+            var shortVideos: [PHAsset] = []
                 
                 for videoAsset in allVideos {
                     let duration = videoAsset.duration
@@ -6691,7 +6952,7 @@ struct ContentView: View {
                     }
                 }
                 
-                filteredPhotos = shortVideos
+            filteredPhotos = shortVideos
 
         }
         
@@ -6701,33 +6962,38 @@ struct ContentView: View {
         }
         
         // Optimize shuffling for performance with best practices - apply to any filter with large photo counts
-        let originalCount = filteredPhotos.count
-        let maxPhotosForPerformance = min(5000, max(2000, originalCount / 10)) // Dynamic limit based on total
+        // Skip shuffling for screenshots when oldest first is selected
+        let shouldShuffle = !(selectedFilter == .screenshots && screenshotSortOrder == ScreenshotSortOrder.oldestFirst.rawValue)
 
-        if originalCount > maxPhotosForPerformance {
-            // Use reservoir sampling for large photo sets to avoid expensive full shuffles
-            var selectedPhotos: [PHAsset] = []
-            selectedPhotos.reserveCapacity(maxPhotosForPerformance)
+        if shouldShuffle {
+            let originalCount = filteredPhotos.count
+            let maxPhotosForPerformance = min(5000, max(2000, originalCount / 10)) // Dynamic limit based on total
 
-            // Fill reservoir initially
-            for i in 0..<maxPhotosForPerformance {
-                selectedPhotos.append(filteredPhotos[i])
-            }
+            if originalCount > maxPhotosForPerformance {
+                // Use reservoir sampling for large photo sets to avoid expensive full shuffles
+                var selectedPhotos: [PHAsset] = []
+                selectedPhotos.reserveCapacity(maxPhotosForPerformance)
 
-            // Replace with decreasing probability for remaining items
-            for i in maxPhotosForPerformance..<originalCount {
-                let j = Int.random(in: 0..<i)
-                if j < maxPhotosForPerformance {
-                    selectedPhotos[j] = filteredPhotos[i]
+                // Fill reservoir initially
+                for i in 0..<maxPhotosForPerformance {
+                    selectedPhotos.append(filteredPhotos[i])
                 }
-            }
 
-            // Final shuffle using Swift's cryptographically secure randomness
-            filteredPhotos = selectedPhotos.shuffled()
-        } else {
-            // For smaller arrays, use standard Fisher-Yates shuffle with SystemRandomNumberGenerator
-            filteredPhotos = filteredPhotos.shuffled()
-            if originalCount > 1000 { // Only log for larger shuffles
+                // Replace with decreasing probability for remaining items
+                for i in maxPhotosForPerformance..<originalCount {
+                    let j = Int.random(in: 0..<i)
+                    if j < maxPhotosForPerformance {
+                        selectedPhotos[j] = filteredPhotos[i]
+                    }
+                }
+
+                // Final shuffle using Swift's cryptographically secure randomness
+                filteredPhotos = selectedPhotos.shuffled()
+            } else {
+                // For smaller arrays, use standard Fisher-Yates shuffle with SystemRandomNumberGenerator
+                filteredPhotos = filteredPhotos.shuffled()
+                if originalCount > 1000 { // Only log for larger shuffles
+                }
             }
         }
         
@@ -6737,20 +7003,15 @@ struct ContentView: View {
     private func completeTikTokFiltering(_ filteredPhotos: [PHAsset]) {
         // Update photos on main thread
         // Batch all state updates together to prevent multiple ViewSizePreferenceKey updates
-        print("🎬 [TikTok Mode - Background Thread] Dispatching state update to main thread")
         DispatchQueue.main.async {
-            print("🎬 [TikTok Mode - Main Thread] State update callback started")
             // Final progress update with transaction
-            print("🎬 [TikTok Mode - Main Thread] Setting progress to 1.0 (Ready)")
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 self.tikTokLoadingProgress = 1.0
                 self.tikTokLoadingMessage = "Ready!"
             }
-            print("🎬 [TikTok Mode - Main Thread] Progress UI updated to 1.0")
 
-            print("🎬 [TikTok Mode - Main Thread] Major state update starting")
             withAnimation(nil) {
                 self.photos = filteredPhotos
                 self.isFilteringShortVideos = false
@@ -6759,33 +7020,24 @@ struct ContentView: View {
                 self.isCategoryCompleted = self.isCurrentFilterCompleted()
             }
 
-            print("🎬 [TikTok Mode - Main Thread] Major state update completed (photos set, isFilteringShortVideos=false)")
 
             // Save persistence data (non-view-affecting)
-            print("🎬 [TikTok Mode - Main Thread] Calling savePersistedData()")
             self.savePersistedData()
-            print("🎬 [TikTok Mode - Main Thread] savePersistedData() returned")
 
             // Setup batch after another delay to prevent frame-rate updates
-            print("🎬 [TikTok Mode - Main Thread] Scheduling setupNewBatch after 0.1s delay")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                print("🎬 [TikTok Mode - Main Thread] Setup batch callback started")
                 if !self.photos.isEmpty {
-                    print("🎬 [TikTok Mode - Main Thread] Photos not empty, setting isLoadingFirstVideo=true")
                     self.isLoadingFirstVideo = true
                     self.tikTokLoadingMessage = "Loading video..."
                     self.tikTokLoadingProgress = 0.5 // Show progress bar at 50% during video loading
-                    print("🎬 [TikTok Mode - Main Thread] Calling setupNewBatch()")
                     self.setupNewBatch()
-                    print("🎬 [TikTok Mode - Main Thread] setupNewBatch() returned")
                 } else {
-                    print("🎬 [TikTok Mode - Main Thread] Photos empty, setting isCompleted=true")
                     self.isCompleted = true
                 }
             }
         }
     }
-
+    
     private func countPhotosForFilter(_ filter: PhotoFilter) -> Int {
         // Use caching to avoid expensive recalculations
         // Invalidate cache if it's more than 30 seconds old or doesn't exist
@@ -6828,8 +7080,8 @@ struct ContentView: View {
             case .onThisDay:
                 guard let creationDate = asset.creationDate else { continue }
                 let today = Date()
-                matchesFilter = creationDate.day == today.day &&
-                               creationDate.month == today.month &&
+                matchesFilter = creationDate.day == today.day && 
+                               creationDate.month == today.month && 
                                creationDate.year != today.year
             case .screenshots:
                 matchesFilter = asset.mediaSubtypes.contains(.photoScreenshot)
@@ -6974,33 +7226,29 @@ struct ContentView: View {
         if assets.isEmpty {
             return "0 MB"
         }
-
+        
         var totalBytes: Int64 = 0
         for asset in assets {
             if let resource = PHAssetResource.assetResources(for: asset).first {
                 if let fileSize = resource.value(forKey: "fileSize") as? Int64 {
-                    totalBytes += fileSize
+                totalBytes += fileSize
                 }
             }
         }
-
+        
         return ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
     }
     
     private func resetAndReload() {
-        print("🔄 [resetAndReload] ENTER - selectedFilter=\(selectedFilter)")
         let resetStart = Date()
 
-        print("🔄 [resetAndReload] Resetting state variables")
         isCompleted = false
         batchIndex = 0
         currentPhotoIndex = 0
         // Don't reset totalProcessed - preserve the count across filter changes
         // totalProcessed = 0  // REMOVED THIS LINE
         currentImage = nil
-        print("🔄 [resetAndReload] Calling cleanupCurrentVideoPlayer()")
         cleanupCurrentVideoPlayer()
-        print("🔄 [resetAndReload] cleanupCurrentVideoPlayer() returned")
         isCurrentAssetVideo = false
         currentPhotoDate = nil
         currentPhotoLocation = nil
@@ -7017,49 +7265,38 @@ struct ContentView: View {
         batchHadDeletions = false
         lastBatchDeletedCount = 0
         lastBatchStorageSaved = ""
-        print("🔄 [resetAndReload] State reset completed in \(Date().timeIntervalSince(resetStart))s")
 
         let filterStart = Date()
-        print("🔄 [resetAndReload] Starting filter logic")
 
         // For TikTok mode, always defer expensive filtering to prevent UI freeze and state conflicts
         if selectedFilter == .shortVideos {
-            print("🎬 [TikTok Mode - resetAndReload] Detected shortVideos filter")
             // Set photos to empty initially, then filter asynchronously
-            print("🎬 [TikTok Mode - resetAndReload] Setting photos=[] and isFilteringShortVideos=true")
             photos = []
             isFilteringShortVideos = true
             
             let tikTokKey = "tikTokModeActivated"
             let cachedShortVideosKey = "cachedShortVideoIds"
             let isFirstActivation = !UserDefaults.standard.bool(forKey: tikTokKey)
-            print("🎬 [TikTok Mode - resetAndReload] isFirstActivation=\(isFirstActivation)")
             
             if isFirstActivation {
                 // Mark TikTok as activated immediately to prevent double filtering
                 UserDefaults.standard.set(true, forKey: tikTokKey)
-                print("🎬 [TikTok Mode - resetAndReload] Marked as activated in UserDefaults")
             }
             
-            print("🎬 [TikTok Mode - resetAndReload] Dispatching async filter to background queue")
             // Always defer the expensive filtering to background (not just first time)
             // This prevents ViewSizePreferenceKey errors on subsequent opens
             DispatchQueue.global(qos: .userInitiated).async {
-                    print("🎬 [TikTok Mode - Background Thread] Async filter started")
                     let asyncFilterStart = Date()
 
                     // Check for cached results first
                     if let cachedShortVideoIds = UserDefaults.standard.array(forKey: cachedShortVideosKey) as? [String],
                        !cachedShortVideoIds.isEmpty {
-                        print("🎬 [TikTok Mode - Background Thread] Found \(cachedShortVideoIds.count) cached short videos")
 
                         // Filter allPhotos to get the cached short videos
                         let cachedShortVideos = self.allPhotos.filter { cachedShortVideoIds.contains($0.localIdentifier) }
-                        print("🎬 [TikTok Mode - Background Thread] \(cachedShortVideos.count) cached videos still exist in library")
 
                         if !cachedShortVideos.isEmpty {
                             // Use cached results - much faster!
-                            print("🎬 [TikTok Mode - Background Thread] Using cached results - skipping expensive filtering")
 
                             DispatchQueue.main.async {
                                 var transaction = Transaction()
@@ -7075,7 +7312,6 @@ struct ContentView: View {
 
                             // Exclude processed photos
                             let processedIds = self.processedPhotoIds[.shortVideos] ?? Set<String>()
-                            print("🎬 [TikTok Mode - Background Thread] Excluding \(processedIds.count) processed videos")
                             finalShortVideos = finalShortVideos.filter { !processedIds.contains($0.localIdentifier) }
 
                             // Shuffle
@@ -7088,7 +7324,6 @@ struct ContentView: View {
                     }
 
                     // Update progress - Step 1: Finding videos
-                    print("🎬 [TikTok Mode - Background Thread] Updating progress to 0.2 (Finding videos)")
                     DispatchQueue.main.async {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
@@ -7096,17 +7331,14 @@ struct ContentView: View {
                             self.tikTokLoadingProgress = 0.2
                             self.tikTokLoadingMessage = "Finding videos in your library..."
                         }
-                        print("🎬 [TikTok Mode - Main Thread] Progress UI updated to 0.2")
                     }
 
                     // Directly filter short videos here instead of calling filterPhotos()
                     // to avoid the nested async issue
-                    print("🎬 [TikTok Mode - Background Thread] Getting allPhotos (count=\(self.allPhotos.count))")
                     var allPhotos = self.allPhotos
                     
                     // Apply content type filter
                     let selectedContentType = self.selectedContentType
-                    print("🎬 [TikTok Mode - Background Thread] Applying content type filter: \(selectedContentType)")
                     switch selectedContentType {
                     case .photos:
                         allPhotos = allPhotos.filter { $0.mediaType == .image }
@@ -7115,15 +7347,11 @@ struct ContentView: View {
                     case .photosAndVideos:
                         break // No filter needed
                     }
-                    print("🎬 [TikTok Mode - Background Thread] After content type filter: \(allPhotos.count) items")
                     
                     // Get all videos
-                    print("🎬 [TikTok Mode - Background Thread] Filtering for videos only")
                     let allVideos = allPhotos.filter { $0.mediaType == .video }
-                    print("🎬 [TikTok Mode - Background Thread] Found \(allVideos.count) videos total")
                     
                     // Update progress - Step 2: Checking durations
-                    print("🎬 [TikTok Mode - Background Thread] Updating progress to 0.4 (Analyzing durations)")
                     DispatchQueue.main.async {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
@@ -7131,11 +7359,9 @@ struct ContentView: View {
                             self.tikTokLoadingProgress = 0.4
                             self.tikTokLoadingMessage = "Analyzing video lengths..."
                         }
-                        print("🎬 [TikTok Mode - Main Thread] Progress UI updated to 0.4")
                     }
                     
                     // Filter for short videos (≤10 seconds) - optimized with concurrent processing
-                    print("🎬 [TikTok Mode - Background Thread] Starting duration filtering")
                     var shortVideos: [PHAsset] = []
                     let totalVideos = allVideos.count
 
@@ -7172,7 +7398,6 @@ struct ContentView: View {
                                 if progressPercent >= lastProgressUpdate + 10 {
                                     lastProgressUpdate = progressPercent
                                     let overallProgress = 0.4 + (Double(processedCount) / Double(totalVideos) * 0.4)
-                                    print("🎬 [TikTok Mode - Background Thread] Progress: \(processedCount)/\(totalVideos) videos scanned (\(Int(overallProgress * 100))%)")
                                     var transaction = Transaction()
                                     transaction.disablesAnimations = true
                                     withTransaction(transaction) {
@@ -7186,12 +7411,9 @@ struct ContentView: View {
 
                     // Wait for all batches to complete
                     group.wait()
-                    print("🎬 [TikTok Mode - Background Thread] Concurrent filtering complete: \(shortVideos.count) short videos found")
                     
-                    print("🎬 [TikTok Mode - Background Thread] Duration filtering complete: \(shortVideos.count) short videos found")
                     
                     // Update progress - Step 3: Filtering
-                    print("🎬 [TikTok Mode - Background Thread] Updating progress to 0.85 (Preparing feed)")
                     DispatchQueue.main.async {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
@@ -7199,21 +7421,16 @@ struct ContentView: View {
                             self.tikTokLoadingProgress = 0.85
                             self.tikTokLoadingMessage = "Preparing your feed..."
                         }
-                        print("🎬 [TikTok Mode - Main Thread] Progress UI updated to 0.85")
                     }
                     
                     // Exclude processed photos
                     let processedIds = self.processedPhotoIds[.shortVideos] ?? Set<String>()
-                    print("🎬 [TikTok Mode - Background Thread] Excluding \(processedIds.count) processed videos")
                     shortVideos = shortVideos.filter { !processedIds.contains($0.localIdentifier) }
-                    print("🎬 [TikTok Mode - Background Thread] After excluding processed: \(shortVideos.count) videos remain")
                     
                     // Shuffle
-                    print("🎬 [TikTok Mode - Background Thread] Shuffling videos")
                     let filteredPhotos = shortVideos.shuffled()
                     
                     // Update progress - Almost done
-                    print("🎬 [TikTok Mode - Background Thread] Updating progress to 0.95 (Almost ready)")
                     DispatchQueue.main.async {
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
@@ -7221,37 +7438,28 @@ struct ContentView: View {
                             self.tikTokLoadingProgress = 0.95
                             self.tikTokLoadingMessage = "Almost ready..."
                         }
-                        print("🎬 [TikTok Mode - Main Thread] Progress UI updated to 0.95")
                     }
                     
                     let asyncFilterEnd = Date()
                     let asyncFilterDuration = asyncFilterEnd.timeIntervalSince(asyncFilterStart)
-                    print("🎬 [TikTok Mode - Background Thread] Async filtering completed in \(asyncFilterDuration)s")
 
                     // Cache the results for faster future launches
                     let shortVideoIds = shortVideos.map { $0.localIdentifier }
                     UserDefaults.standard.set(shortVideoIds, forKey: cachedShortVideosKey)
-                    print("🎬 [TikTok Mode - Background Thread] Cached \(shortVideoIds.count) short video IDs")
 
                     // Update photos on main thread
                     // Batch all state updates together to prevent multiple ViewSizePreferenceKey updates
-                    print("🎬 [TikTok Mode - Background Thread] Dispatching state update to main thread")
                     DispatchQueue.main.async {
-                        print("🎬 [TikTok Mode - Main Thread] State update callback started")
                         // Final progress update with transaction
-                        print("🎬 [TikTok Mode - Main Thread] Setting progress to 1.0 (Ready)")
                         var transaction = Transaction()
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
                             self.tikTokLoadingProgress = 1.0
                             self.tikTokLoadingMessage = "Ready!"
                         }
-                        print("🎬 [TikTok Mode - Main Thread] Progress UI set to 100%")
                         
                         // Brief delay before major state change to separate from progress update
-                        print("🎬 [TikTok Mode - Main Thread] Scheduling major state update after 0.2s delay")
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            print("🎬 [TikTok Mode - Main Thread] Major state update starting - setting photos (count=\(filteredPhotos.count))")
                             // Batch all major state updates in a single transaction
                             var transaction = Transaction()
                             transaction.disablesAnimations = true
@@ -7262,38 +7470,27 @@ struct ContentView: View {
                                 self.isOpeningCategory = false // Allow paywall to show again after category loading completes
                                 self.isCategoryCompleted = self.isCurrentFilterCompleted()
                             }
-                            print("🎬 [TikTok Mode - Main Thread] Major state update completed (photos set, isFilteringShortVideos=false)")
                             
                             // Save persistence data (non-view-affecting)
-                            print("🎬 [TikTok Mode - Main Thread] Calling savePersistedData()")
                             self.savePersistedData()
-                            print("🎬 [TikTok Mode - Main Thread] savePersistedData() returned")
 
                             // Setup batch after another delay to prevent frame-rate updates
-                            print("🎬 [TikTok Mode - Main Thread] Scheduling setupNewBatch after 0.1s delay")
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                print("🎬 [TikTok Mode - Main Thread] Setup batch callback started")
                                 if !self.photos.isEmpty {
-                                    print("🎬 [TikTok Mode - Main Thread] Photos not empty, setting isLoadingFirstVideo=true")
                                     self.isLoadingFirstVideo = true
                                     self.tikTokLoadingMessage = "Loading video..."
-                                    print("🎬 [TikTok Mode - Main Thread] Calling setupNewBatch()")
                                     self.setupNewBatch()
-                                    print("🎬 [TikTok Mode - Main Thread] setupNewBatch() returned")
                                 } else {
-                                    print("🎬 [TikTok Mode - Main Thread] Photos empty, setting isCompleted=true")
                                     self.isCompleted = true
                                 }
                                 
                                 // Reset progress for next time
-                                print("🎬 [TikTok Mode - Main Thread] Resetting progress indicators")
                                 var transaction = Transaction()
                                 transaction.disablesAnimations = true
                                 withTransaction(transaction) {
                                     self.tikTokLoadingProgress = 0.0
                                     self.tikTokLoadingMessage = "Finding short videos..."
                                 }
-                                print("🎬 [TikTok Mode - Main Thread] TikTok mode activation COMPLETE ✅")
                             }
                         }
                     }
@@ -7352,18 +7549,22 @@ struct ContentView: View {
     private func showAdModal() {
         // Save swiped photos before showing ad to prevent loss
         saveSwipedPhotos()
-        showingAdModal = true
+        withAnimation {
+            showingAdModal = true
+        }
     }
     
     private func showRewardedAdDirectly() {
         hasGrantedReward = false
-        showingRewardedAd = true
+        withAnimation {
+            showingRewardedAd = true
+        }
     }
     
     private func loadPersistedData() {
         // Load global processed photo IDs asynchronously to avoid blocking app launch
         Task {
-            if let savedGlobalPhotoIds = UserDefaults.standard.array(forKey: globalProcessedPhotoIdsKey) as? [String] {
+        if let savedGlobalPhotoIds = UserDefaults.standard.array(forKey: globalProcessedPhotoIdsKey) as? [String] {
                 await MainActor.run {
                     self.globalProcessedPhotoIds = Set(savedGlobalPhotoIds)
                     self.totalProcessed = self.globalProcessedPhotoIds.count
@@ -7542,8 +7743,8 @@ struct ContentView: View {
                 
                 if isUnsatisfied && (wasSatisfied || self.previousNetworkStatus == nil) {
                     self.hasShownNetworkWarning = true
-                    self.showingNetworkWarning = true
-                }
+                        self.showingNetworkWarning = true
+                    }
                 
                 // Update previous network status
                 self.previousNetworkStatus = path.status
@@ -7606,11 +7807,9 @@ struct ContentView: View {
     }
     
     private func stopAllVideoPlayback() {
-        print("🚫 [stopAllVideoPlayback] EMERGENCY: Stopping ALL video playback")
 
         // Stop current player - ALWAYS stop regardless of rate
         if let current = currentVideoPlayer {
-            print("🚫 [stopAllVideoPlayback] Stopping current player, rate: \(current.rate)")
             current.pause()
             current.volume = 0.0
             current.isMuted = true
@@ -7622,17 +7821,14 @@ struct ContentView: View {
         // Note: No preloaded players exist anymore - only assets are preloaded
         // Only currentVideoPlayer can play, so we've already stopped it above
 
-        print("🚫 [stopAllVideoPlayback] All video playback stopped")
     }
 
     private func cleanupAllPreloadedContent() {
-        print("🧹 [cleanupAllPreloadedContent] ENTER - cleaning up all content")
 
         // EMERGENCY: Stop ALL video playback to prevent background audio
         stopAllVideoPlayback()
 
         // Clean up preloaded video assets (no players to clean up)
-        print("🧹 [cleanupAllPreloadedContent] Cleaning up \(preloadedVideoAssets.count) preloaded video assets")
         preloadedVideoAssets.removeAll()
         preloadedImages.removeAll()
         cleanupAllCachedVideoExports()
@@ -7641,13 +7837,11 @@ struct ContentView: View {
         // Clean up next asset state
         nextAsset = nil
         isNextAssetVideo = false
-
+        
         // Also clear current media
-        print("🧹 [cleanupAllPreloadedContent] Cleaning up current video player")
         cleanupCurrentVideoPlayer()
         currentImage = nil
 
-        print("🧹 [cleanupAllPreloadedContent] EXIT - all content cleaned up")
     }
     
     private func shareCurrentPhoto() {
@@ -7656,22 +7850,54 @@ struct ContentView: View {
         let asset = currentBatch[currentPhotoIndex]
 
         if asset.mediaType == .image {
-            if let image = currentImage {
-                let shareItem = PhotoShareItemSource(
-                    image: image,
+        if let image = currentImage {
+            let shareItem = PhotoShareItemSource(
+                image: image,
                     title: shareTitle(for: asset)
-                )
-                itemToShare = [shareItem]
-                presentShareSheet()
+            )
+            itemToShare = [shareItem]
+            presentShareSheet()
             }
         } else if asset.mediaType == .video {
             shareVideo(asset: asset)
         }
     }
     
+    private func favoriteCurrentPhoto() {
+        guard currentPhotoIndex < currentBatch.count else { return }
+        let asset = currentBatch[currentPhotoIndex]
+        let newFavoriteState = !isCurrentPhotoFavorite
+        
+        // Optimistic update
+        isCurrentPhotoFavorite = newFavoriteState
+        
+        PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetChangeRequest(for: asset)
+            request.isFavorite = newFavoriteState
+        } completionHandler: { success, error in
+            DispatchQueue.main.async {
+                if !success {
+                    // Revert if failed
+                    self.isCurrentPhotoFavorite = !newFavoriteState
+                    print("Failed to toggle favorite: \(error?.localizedDescription ?? "Unknown error")")
+                } else {
+                    // Success feedback
+                    let generator = UINotificationFeedbackGenerator()
+                    generator.notificationOccurred(newFavoriteState ? .success : .warning)
+                }
+            }
+        }
+    }
+    
+    private func updateFavoriteState() {
+        guard currentPhotoIndex < currentBatch.count else { return }
+        let asset = currentBatch[currentPhotoIndex]
+        isCurrentPhotoFavorite = asset.isFavorite
+    }
+    
     private func shareVideo(asset: PHAsset) {
         let assetId = asset.localIdentifier
-
+        
         if let cachedURL = cachedVideoExports[assetId],
            FileManager.default.fileExists(atPath: cachedURL.path) {
             let preview = previewImage(for: assetId)
@@ -8068,6 +8294,11 @@ struct ContentView: View {
             }
         }
         swipedPhotos = restored
+        
+        // Update favorite state for the current photo if restored
+        DispatchQueue.main.async {
+            self.updateFavoriteState()
+        }
     }
     
     // MARK: - Random Quote and Fact Functions
@@ -8139,15 +8370,51 @@ private struct ScrollContentBackgroundHidden: ViewModifier {
 // Note: PhotoThumbnailView moved to Components/PhotoThumbnailView.swift
 
 // MARK: - Ad Modal View
+struct ShimmerEffect: ViewModifier {
+    @State private var phase: CGFloat = 0
+    
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geo in
+                    LinearGradient(
+                        colors: [
+                            .clear,
+                            .white.opacity(0.3),
+                            .clear
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: geo.size.width * 2)
+                    .offset(x: -geo.size.width + (geo.size.width * 2 * phase))
+                }
+            )
+            .onAppear {
+                withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+            .mask(content)
+    }
+}
+
+extension View {
+    func shimmer() -> some View {
+        modifier(ShimmerEffect())
+    }
+}
+
 struct AdModalView: View {
     let onDismiss: () -> Void
     let onShowPaywall: () -> Void
     @EnvironmentObject var purchaseManager: PurchaseManager
+    @State private var animateIn = false
     
     private let benefits: [PromoBenefit] = [
-        PromoBenefit(icon: "sparkles", title: "Declutter in Seconds", detail: "AI flags duplicates, screenshots, and blurry shots before you even swipe."),
-        PromoBenefit(icon: "bolt.heart", title: "Save Hours Weekly", detail: "Batch review with smart sorting so you only focus on photos that matter."),
-        PromoBenefit(icon: "person.3.sequence", title: "Trusted by 12,000+ Creators", detail: "Photographers, parents, and travelers rely on Kage to keep their libraries spotless.")
+        PromoBenefit(icon: "archivebox.fill", title: "Reclaim Storage", detail: "Instantly clear gigabytes of duplicates, screenshots, and useless clutter."),
+        PromoBenefit(icon: "rectangle.stack.3d.down.fill", title: "Organize Everything", detail: "Let AI sort your messy camera roll into tidy collections effortlessly."),
+        PromoBenefit(icon: "sparkles", title: "Relive the Best", detail: "Surface your most precious memories while hiding the blurry shots.")
     ]
     
     var body: some View {
@@ -8164,20 +8431,21 @@ struct AdModalView: View {
             
             VStack(spacing: 28) {
                 VStack(spacing: 12) {
-                    Text("Upgrade to Kage Premium")
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                    Text("Reclaim Your Phone's Space")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
                     
-                    Text("\"I cleared 6,000 photos in a weekend.\" - Emma, London")
+                    Text("\"I recovered 14GB of storage in 5 minutes!\" - Emma, London")
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white.opacity(0.8))
+                        .foregroundColor(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
                     
-                    Text("For less than the price of a coffee you unlock unlimited swipes, priority AI cleanup, and all premium perks.")
+                    Text("Unlock unlimited swipes and powerful AI organization to keep your camera roll spotless.")
                         .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.7))
+                        .foregroundColor(.white.opacity(0.75))
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 12)
                 }
                 
                 VStack(alignment: .leading, spacing: 18) {
@@ -8206,34 +8474,59 @@ struct AdModalView: View {
                 .background(Color.white.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 20))
                 
-                VStack(spacing: 14) {
+                VStack(spacing: 16) {
                     Button(action: onShowPaywall) {
-                        Text("Unlock Unlimited Swipes")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 54)
-                            .background(
-                                LinearGradient(
-                                    colors: [Color.blue, Color.purple],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
+                        ZStack {
+                            Text("Unlock Premium Swipes")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                                .shimmer()
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 56)
+                        .background(
+                            LinearGradient(
+                                colors: [Color.blue, Color.purple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
                             )
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .shadow(color: Color.blue.opacity(0.35), radius: 14, x: 0, y: 8)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .shadow(color: Color.blue.opacity(0.4), radius: 12, x: 0, y: 6)
                     }
+                    .scaleEffect(1.0) // Placeholder for animation
                     
                     Button(action: onDismiss) {
                         Text("Maybe Later")
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.white.opacity(0.65))
                             .padding(.vertical, 8)
                     }
                 }
             }
-            .padding(32)
+            .padding(24)
+            .background(
+                RoundedRectangle(cornerRadius: 32)
+                    .fill(Color.white.opacity(0.08))
+                    .background(
+                        // Backwards compatible glassmorphism fallback
+                        Color(red: 0.1, green: 0.1, blue: 0.2).opacity(0.8)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 32)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            )
+            .padding(24)
+            .scaleEffect(animateIn ? 1.0 : 0.8)
+            .opacity(animateIn ? 1.0 : 0)
+            .onAppear {
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.7, blendDuration: 0)) {
+                    animateIn = true
+                }
+            }
         }
+        .padding(32)
         .onChange(of: purchaseManager.purchaseState) { state in
             if state == .success {
                 onDismiss()
@@ -8245,8 +8538,8 @@ struct AdModalView: View {
 private struct PromoBenefit: Identifiable {
     let id = UUID()
     let icon: String
-    let title: String
-    let detail: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
 }
 
 // MARK: - Rewarded Ad Modal View
@@ -8267,33 +8560,30 @@ struct RewardedAdModalView: View {
     
     private let slides: [PromoSlide] = [
         PromoSlide(
-            icon: "wand.and.stars",
-            title: "Let AI Clear the Clutter",
-            message: "Kage pre-selects duplicates, screenshots, and blur shots so you tap \"Delete\" with confidence."
+            icon: "archivebox.circle.fill",
+            title: "Instantly Reclaim Storage",
+            message: "Kage AI identifies gigabytes of redundant photos so you can reclaim space in seconds."
         ),
         PromoSlide(
-            icon: "clock.arrow.circlepath",
-            title: "10 Minutes a Day -> Clutter Free Camera Roll",
-            message: "Stay organized with smart streaks, daily reminders, and instant summaries of progress."
+            icon: "sparkles.rectangle.stack.fill",
+            title: "Organize with AI",
+            message: "Group your messy camera roll automatically. Relive your favorite moments, clutter-free."
         ),
         PromoSlide(
-            icon: "heart.text.square",
-            title: "Loved by Busy Parents & Creators",
-            message: "\"Game changer! Went from 48k photos to 9k in a month.\" - Alex, NYC"
-        ),
-        PromoSlide(
-            icon: "globe.americas.fill",
-            title: "Curate a Timeline You're Proud Of",
-            message: "Rediscover memories faster with year stacks, 'On This Day' surprises, and smart shuffle collections."
+            icon: "heart.fill",
+            title: "Rediscover Your Best Memories",
+            message: "Hide the blur and the duplicates. Focus on the memories that actually matter to you."
         )
     ]
     
     var body: some View {
         ZStack {
+            Color.black.opacity(0.9).ignoresSafeArea()
+            
             LinearGradient(
                 colors: [
-                    Color(red: 0.04, green: 0.05, blue: 0.12),
-                    Color(red: 0.00, green: 0.01, blue: 0.05)
+                    Color(red: 0.1, green: 0.12, blue: 0.25).opacity(0.8),
+                    Color(red: 0.05, green: 0.05, blue: 0.15).opacity(0.9)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -8332,14 +8622,14 @@ struct RewardedAdModalView: View {
         let progress = 1 - Double(remainingSeconds) / Double(totalDuration)
         
         return VStack(spacing: 24) {
-            Text("Have you tried Kage Premium?")
-                .font(.system(size: 24, weight: .bold, design: .rounded))
+            Text("Organize Your Phone with Premium")
+                .font(.system(size: 26, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
             
-            Text("For less than the price of a coffee you unlock unlimited swipes, advanced cleanup features, and powerful insights.")
+            Text("Unlock unlimited swipes, AI storage insights, and a cleaner camera roll today.")
                 .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white.opacity(0.75))
+                .foregroundColor(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 16)
             
@@ -8397,7 +8687,7 @@ struct RewardedAdModalView: View {
                                 .foregroundColor(.white)
                                 .padding(.vertical, 10)
                                 .frame(maxWidth: .infinity)
-                                .background(Color.white.opacity(0.18))
+                                .background(Color.green)
                                 .clipShape(RoundedRectangle(cornerRadius: 14))
                         }
                     }
@@ -8448,17 +8738,17 @@ struct RewardedAdModalView: View {
 
 private struct PromoSlide {
     let icon: String
-    let title: String
-    let message: String
+    let title: LocalizedStringKey
+    let message: LocalizedStringKey
 }
 
-// ... existing code ...
+
 
 // MARK: - SwipeActionButton Components
 private struct SwipeActionButton: View {
     @Environment(\.isEnabled) private var isEnabled
     
-    let title: String
+    let title: LocalizedStringKey
     let systemImage: String
     let gradient: [Color]
     let iconBackground: Color
@@ -8483,6 +8773,8 @@ private struct SwipeActionButton: View {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
                     .foregroundColor(textColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -8518,6 +8810,57 @@ private struct SwipeActionButton: View {
     }
 }
 
+// MARK: - Icon-Only Action Button (for Share and Favorite)
+private struct IconActionButton: View {
+    @Environment(\.isEnabled) private var isEnabled
+    
+    let systemImage: String
+    let gradient: [Color]
+    let strokeColor: Color
+    let shadowColor: Color
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(0.2))
+                    .frame(width: 24, height: 24)
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            .frame(width: 48, height: 48)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            gradient: Gradient(colors: gradient),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        strokeColor.opacity(isEnabled ? 1.0 : 0.4),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(
+                color: shadowColor.opacity(isEnabled ? 0.3 : 0.1),
+                radius: 8,
+                x: 0,
+                y: 4
+            )
+            .opacity(isEnabled ? 1 : 0.55)
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - ShareSheet Component
 struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [Any]
@@ -8550,7 +8893,16 @@ enum StoragePreference: String, CaseIterable {
     case storageOptimized = "Storage Optimized"
     case highQuality = "Performance Optimized"
     
-    var description: String {
+    var title: LocalizedStringKey {
+        switch self {
+        case .storageOptimized:
+            return "Storage Optimized"
+        case .highQuality:
+            return "Performance Optimized"
+        }
+    }
+    
+    var description: LocalizedStringKey {
         switch self {
         case .storageOptimized:
             return "Uses local photos when possible, downloads only if needed. May show lower quality images initially and may degrade your experience. Not recommended."
@@ -8594,9 +8946,39 @@ enum StoragePreference: String, CaseIterable {
             return UIScreen.main.scale  // Keep high quality as-is for users who want it
         }
     }
+
+    // Helper to check if asset is local WITHOUT triggering download or expensive requests
 }
 
 extension ContentView {
+    // Helper to check if asset is local WITHOUT triggering download or expensive requests
+    // Used for offline-first prioritization
+    func isFastLocalCheck(_ asset: PHAsset) -> Bool {
+        let resources = PHAssetResource.assetResources(for: asset)
+        return !resources.isEmpty && asset.sourceType != .typeCloudShared
+    }
+
+    // Robust check that attempts to fetch the actual image data from disk
+    // Slower than isFastLocalCheck but guarantees the image is not distinctively blurry
+    func isRobustLocalCheck(_ asset: PHAsset) -> Bool {
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = false // Strictly forbid network
+        options.isSynchronous = true           // Block to get immediate result
+        options.deliveryMode = .fastFormat     // We just want to know if *some* usable image exists locally
+        
+        var isLocal = false
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: 100, height: 100), // Small target is enough to check existence
+            contentMode: .aspectFit,
+            options: options
+        ) { image, _ in
+            if image != nil {
+                isLocal = true
+            }
+        }
+        return isLocal
+    }
     func getImageOptions(for preference: StoragePreference) -> PHImageRequestOptions {
         let options = PHImageRequestOptions()
         options.isSynchronous = false
@@ -8781,7 +9163,7 @@ extension View {
 // MARK: - Indeterminate Progress Bar
 // Animated progress bar that shows activity even when actual progress is unknown
 private struct IndeterminateProgressBar: View {
-    @State private var offset: CGFloat = -1.0
+    @State private var offset: CGFloat = 0.0  // Start at the left edge
     
     var body: some View {
         GeometryReader { geometry in
@@ -8790,7 +9172,7 @@ private struct IndeterminateProgressBar: View {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.gray.opacity(0.2))
                 
-                // Animated shimmer bar
+                // Animated shimmer bar - stays within track bounds
                 RoundedRectangle(cornerRadius: 8)
                     .fill(
                         LinearGradient(
@@ -8802,13 +9184,14 @@ private struct IndeterminateProgressBar: View {
                     .frame(width: geometry.size.width * 0.4)
                     .offset(x: offset * geometry.size.width)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 8))  // Clip to prevent any overflow outside track
         }
         .onAppear {
             withAnimation(
                 .easeInOut(duration: 1.2)
                 .repeatForever(autoreverses: true)
             ) {
-                offset = 0.6
+                offset = 0.6  // Animate from 0 to 0.6 (stays within bounds since bar is 0.4 wide)
             }
         }
     }

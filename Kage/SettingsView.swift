@@ -9,11 +9,37 @@ import SwiftUI
 import StoreKit
 import RevenueCatUI
 import RevenueCat
+import UIKit
+
+// MARK: - Screenshot Sort Order
+enum ScreenshotSortOrder: String, CaseIterable {
+    case random = "random"
+    case oldestFirst = "oldestFirst"
+    
+    var title: LocalizedStringKey {
+        switch self {
+        case .random:
+            return "Random"
+        case .oldestFirst:
+            return "Oldest First"
+        }
+    }
+    
+    var description: LocalizedStringKey {
+        switch self {
+        case .random:
+            return "Shows screenshots in default order (newest first)"
+        case .oldestFirst:
+            return "Shows oldest screenshots first to help clear old clutter"
+        }
+    }
+}
 
 struct SettingsView: View {
     @EnvironmentObject private var purchaseManager: PurchaseManager
     @Environment(\.dismiss) private var dismiss
     @AppStorage("storagePreference") private var storagePreferenceRawValue: String = StoragePreference.highQuality.rawValue
+    @AppStorage("screenshotSortOrder") private var screenshotSortOrder: String = ScreenshotSortOrder.random.rawValue
     @State private var showingPaywall = false
     
     private var storagePreference: StoragePreference {
@@ -146,8 +172,65 @@ struct SettingsView: View {
                         }
                     }
                     .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: openFeedbackEmail) {
+                        HStack {
+                            Image(systemName: "envelope.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.blue)
+                                .frame(width: 24, height: 24)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Feedback & Ideas")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.primary)
+                                
+                                Text("Share your thoughts with us")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 } header: {
                     Text("Support")
+                }
+                
+                // Screenshot Order Section
+                Section {
+                    ForEach(ScreenshotSortOrder.allCases, id: \.self) { order in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(order.title)
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.primary)
+                                
+                                Text(order.description)
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(nil)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            
+                            Spacer()
+                            
+                            if screenshotSortOrder == order.rawValue {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.blue)
+                                    .font(.system(size: 16, weight: .medium))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            screenshotSortOrder = order.rawValue
+                        }
+                    }
+                } header: {
+                    Text("Screenshot Order")
+                } footer: {
+                    Text("Choose how screenshots are ordered when reviewing. This only affects the Screenshots filter.")
                 }
 
                 // Photo Quality Section
@@ -155,7 +238,7 @@ struct SettingsView: View {
                     ForEach(StoragePreference.allCases, id: \.self) { preference in
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(preference.rawValue)
+                                Text(preference.title)
                                     .font(.system(size: 16, weight: .medium))
                                     .foregroundColor(.primary)
 
@@ -252,6 +335,7 @@ struct SettingsView: View {
                 dismiss()
             })
         }
+        .navigationViewStyle(.stack)
         .sheet(isPresented: $showingPaywall) {
             PlacementPaywallWrapper(
                 placementIdentifier: PurchaseManager.PlacementIdentifier.featureGate.rawValue,
@@ -285,6 +369,63 @@ struct SettingsView: View {
     private func rateApp() {
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
             SKStoreReviewController.requestReview(in: windowScene)
+        }
+    }
+    
+    private func openFeedbackEmail() {
+        let supportEmail = AppConfig.supportEmail
+        let subject = "Feedback/Idea"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        let systemVersion = UIDevice.current.systemVersion
+        let deviceModel = UIDevice.current.model
+
+        let body = """
+        Hi Kage team,
+        
+        I wanted to share some feedback or an idea:
+        
+        
+        
+        
+        
+        ---
+        App Version: \(version) (\(build))
+        iOS Version: \(systemVersion)
+        Device: \(deviceModel)
+        """
+
+        // Build mailto URL with proper encoding using URLQueryItem
+        let subjectItem = URLQueryItem(name: "subject", value: subject)
+        let bodyItem = URLQueryItem(name: "body", value: body)
+        
+        // Use a temporary URLComponents with a dummy scheme to get properly encoded query string
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "dummy"
+        components.queryItems = [subjectItem, bodyItem]
+        
+        // Get the properly encoded query string (without the leading ?)
+        guard let url = components.url,
+              let queryString = url.query else {
+            return
+        }
+        
+        // Build the mailto URL string
+        let mailtoString = "mailto:\(supportEmail)?\(queryString)"
+        
+        guard let mailtoURL = URL(string: mailtoString) else {
+            return
+        }
+
+        // Open Mail app
+        UIApplication.shared.open(mailtoURL) { success in
+            if !success {
+                // If mailto fails, try opening the URL again
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    UIApplication.shared.open(mailtoURL)
+                }
+            }
         }
     }
 }
@@ -335,12 +476,12 @@ struct FAQView: View {
                     ) {
                         FAQItem(
                             question: "How does Kage work?",
-                            answer: "Kage helps you declutter your photo library by showing you photos one at a time. Simply swipe right to keep a photo or swipe left to delete it. The app processes photos in batches of 10 and shows you a review screen where you can confirm or undo your choices before any deletion occurs."
+                            answer: "Kage helps you declutter your photo library by showing you photos one at a time. Simply swipe right to keep a photo or swipe left to delete it. The app processes photos in batches of 15 and shows you a review screen where you can confirm or undo your choices before any deletion occurs."
                         )
                         
                         FAQItem(
                             question: "Is it safe to delete photos?",
-                            answer: "Yes! Kage uses iOS's native photo deletion system with multiple safety layers. Photos are processed in batches of 10, and you must review and confirm each batch before any deletion occurs. When confirmed, photos are moved to your Recently Deleted album where they stay for 30 days before being permanently removed. You can always recover them from Recently Deleted if needed."
+                            answer: "Yes! Kage uses iOS's native photo deletion system with multiple safety layers. Photos are processed in batches of 15, and you must review and confirm each batch before any deletion occurs. When confirmed, photos are moved to your Recently Deleted album where they stay for 30 days before being permanently removed. You can always recover them from Recently Deleted if needed."
                         )
                         
                         FAQItem(
@@ -617,8 +758,8 @@ struct StatsView: View {
 
 // MARK: - Supporting Views
 struct AchievementRow: View {
-    let title: String
-    let description: String
+    let title: LocalizedStringKey
+    let description: LocalizedStringKey
     let isUnlocked: Bool
     let icon: String
     
@@ -643,8 +784,8 @@ struct AchievementRow: View {
             
             if isUnlocked {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                    .font(.system(size: 20))
+                .foregroundColor(.green)
+                .font(.system(size: 20))
             }
         }
         .padding(.horizontal, 16)
@@ -656,12 +797,12 @@ struct AchievementRow: View {
 }
 
 struct FAQSection<Content: View>: View {
-    let title: String
+    let title: LocalizedStringKey
     let icon: String
     let color: Color
     let content: Content
     
-    init(title: String, icon: String, color: Color, @ViewBuilder content: () -> Content) {
+    init(title: LocalizedStringKey, icon: String, color: Color, @ViewBuilder content: () -> Content) {
         self.title = title
         self.icon = icon
         self.color = color
@@ -690,8 +831,8 @@ struct FAQSection<Content: View>: View {
 }
 
 struct FAQItem: View {
-    let question: String
-    let answer: String
+    let question: LocalizedStringKey
+    let answer: LocalizedStringKey
     @State private var isExpanded = false
     
     var body: some View {

@@ -11,7 +11,7 @@ struct WelcomeFlowView: View {
     var body: some View {
         ZStack {
             // Clean white background
-            Color.white
+            Color(.systemBackground)
                 .ignoresSafeArea()
             
             if isCheckingPermissions {
@@ -22,7 +22,7 @@ struct WelcomeFlowView: View {
                         .scaleEffect(1.5)
                     
                     Text("Checking permissions...")
-                        .font(.system(size: 17, weight: .medium))
+                        .font(.system(size: min(17, UIScreen.main.bounds.width * 0.045), weight: .medium))
                         .foregroundColor(.gray)
                         .padding(.top, 20)
                 }
@@ -137,15 +137,15 @@ struct PhotoAccessView: View {
             
             // Title
             Text("Photo Library Access")
-                .font(.system(size: 32, weight: .bold))
-                .foregroundColor(.black)
+                .font(.system(size: min(32, UIScreen.main.bounds.width * 0.08), weight: .bold))
+                .foregroundColor(.primary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
                 .opacity(isAnimating ? 1.0 : 0.0)
-            
+
             // Subtitle
             Text("We need access to help you organize your photos")
-                .font(.system(size: 17, weight: .regular))
+                .font(.system(size: min(17, UIScreen.main.bounds.width * 0.045), weight: .regular))
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
@@ -178,10 +178,10 @@ struct PhotoAccessView: View {
                 if photoAccessStatus == .denied || photoAccessStatus == .restricted {
                     Button(action: openSettings) {
                         Text("Open Settings")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: min(17, UIScreen.main.bounds.width * 0.045), weight: .semibold))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 54)
+                            .frame(height: max(54, UIScreen.main.bounds.width * 0.13))
                             .background(
                                 LinearGradient(
                                     gradient: Gradient(colors: [
@@ -198,7 +198,7 @@ struct PhotoAccessView: View {
                     
                     Button(action: checkPermissionStatus) {
                         Text("I've Enabled Access")
-                            .font(.system(size: 15, weight: .medium))
+                            .font(.system(size: min(15, UIScreen.main.bounds.width * 0.04), weight: .medium))
                             .foregroundColor(Color(red: 0.5, green: 0.2, blue: 0.8))
                     }
                     .padding(.horizontal, 40)
@@ -210,8 +210,8 @@ struct PhotoAccessView: View {
                                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                     .scaleEffect(0.8)
                             } else {
-                                Text("Allow Access")
-                                    .font(.system(size: 17, weight: .semibold))
+                                Text("Continue")
+                                    .font(.system(size: min(17, UIScreen.main.bounds.width * 0.045), weight: .semibold))
                                     .foregroundColor(.white)
                             }
                         }
@@ -334,15 +334,15 @@ struct NotificationPermissionView: View {
             
             // Title
             Text("Stay on Track")
-                .font(.system(size: 32, weight: .bold))
-                .foregroundColor(.black)
+                .font(.system(size: min(32, UIScreen.main.bounds.width * 0.08), weight: .bold))
+                .foregroundColor(.primary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
                 .opacity(isAnimating ? 1.0 : 0.0)
-            
+
             // Subtitle
             Text("Get daily reminders to keep your library organized")
-                .font(.system(size: 17, weight: .regular))
+                .font(.system(size: min(17, UIScreen.main.bounds.width * 0.045), weight: .regular))
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
@@ -363,11 +363,11 @@ struct NotificationPermissionView: View {
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("3x More Likely to Clean")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.black)
-                    
+                        .font(.system(size: min(16, UIScreen.main.bounds.width * 0.04), weight: .semibold))
+                        .foregroundColor(.primary)
+
                     Text("Users with reminders are 3x more likely to clean their library")
-                        .font(.system(size: 14, weight: .regular))
+                        .font(.system(size: min(14, UIScreen.main.bounds.width * 0.035), weight: .regular))
                         .foregroundColor(.gray)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -390,7 +390,7 @@ struct NotificationPermissionView: View {
                                 .scaleEffect(0.8)
                         } else {
                             Text("Enable Reminders")
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.system(size: min(17, UIScreen.main.bounds.width * 0.045), weight: .semibold))
                                 .foregroundColor(.white)
                         }
                     }
@@ -416,7 +416,7 @@ struct NotificationPermissionView: View {
                     onContinue()
                 }) {
                     Text("Maybe Later")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: min(15, UIScreen.main.bounds.width * 0.04), weight: .medium))
                         .foregroundColor(.gray)
                 }
                 .padding(.horizontal, 40)
@@ -452,18 +452,18 @@ struct NotificationPermissionView: View {
 // MARK: - Permission Feature Row
 struct PermissionFeature: View {
     let icon: String
-    let text: String
+    let text: LocalizedStringKey
     
     var body: some View {
         HStack(spacing: 16) {
             Image(systemName: icon)
-                .font(.system(size: 20))
+                .font(.system(size: min(20, UIScreen.main.bounds.width * 0.05)))
                 .foregroundColor(Color(red: 0.5, green: 0.2, blue: 0.8))
-                .frame(width: 24)
+                .frame(width: min(24, UIScreen.main.bounds.width * 0.06))
             
             Text(text)
-                .font(.system(size: 16, weight: .regular))
-                .foregroundColor(.black)
+                .font(.system(size: min(16, UIScreen.main.bounds.width * 0.04), weight: .regular))
+                .foregroundColor(.primary)
             
             Spacer()
         }

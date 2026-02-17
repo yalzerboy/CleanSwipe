@@ -41,8 +41,19 @@ struct DuplicateReviewView: View {
             ZStack {
                 Color(.systemGroupedBackground)
                     .ignoresSafeArea()
-                
+
                 VStack(spacing: 0) {
+                    // Fixed beta badge at the top
+                    HStack {
+                        Spacer()
+                        BetaCornerBadge()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+                    .allowsHitTesting(false)
+                    .zIndex(1) // Ensure badge stays above content
+
                     content
                     footer
                 }
@@ -58,14 +69,17 @@ struct DuplicateReviewView: View {
                 }
             }
             .onAppear {
-                if viewModel.groups.isEmpty && !viewModel.isLoading {
-                    viewModel.reload()
+                // Only perform initial load when first appearing
+                if !viewModel.hasPerformedInitialLoad && (viewModel.groups.isEmpty || viewModel.errorMessage != nil) {
+                    viewModel.reload(userInitiated: false)
                 }
             }
             .onDisappear {
                 viewModel.cancelScanning()
                 // Reset dismissal state in case it was set but dismissal failed
                 isDismissing = false
+                // Clear any cached error state to ensure fresh start on reappearance
+                viewModel.clearErrorState()
             }
             .onChange(of: viewModel.deletionMessage) { message in
                 alertMessage = message
@@ -82,13 +96,13 @@ struct DuplicateReviewView: View {
                 }
             }
         }
+        .navigationViewStyle(.stack)
     }
     
     @ViewBuilder
     private var content: some View {
         if viewModel.isLoading && viewModel.groups.isEmpty {
             VStack(spacing: 16) {
-                badgeHeader
                 if let progress = viewModel.scanProgress {
                     ProgressView(value: progress, total: 1.0)
                         .progressViewStyle(.linear)
@@ -109,7 +123,6 @@ struct DuplicateReviewView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = viewModel.errorMessage {
             VStack(spacing: 12) {
-                badgeHeader
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 32))
                     .foregroundColor(.orange)
@@ -133,9 +146,8 @@ struct DuplicateReviewView: View {
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if viewModel.groups.isEmpty {
+        } else if viewModel.visibleGroups.isEmpty {
             VStack(spacing: 12) {
-                badgeHeader
                 Image(systemName: "checkmark.shield.fill")
                     .font(.system(size: 34))
                     .foregroundColor(.green)
@@ -149,7 +161,7 @@ struct DuplicateReviewView: View {
                     .padding(.horizontal, 32)
                 
                 Button {
-                    viewModel.reload(userInitiated: true)
+                    viewModel.scanAgain()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.clockwise")
@@ -162,7 +174,6 @@ struct DuplicateReviewView: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 18, pinnedViews: []) {
-                    badgeHeader
                     if let progress = viewModel.scanProgress, viewModel.isScanningWithProgress {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
@@ -200,14 +211,15 @@ struct DuplicateReviewView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.blue.opacity(0.75))
                     
-                    ForEach(viewModel.groups) { group in
+                    ForEach(viewModel.visibleGroups) { group in
                         DuplicateGroupSection(
                             group: group,
-                            isLoadingMore: viewModel.isLoadingMore && group.id == viewModel.groups.last?.id,
+                            isLoadingMore: viewModel.isLoadingMore && group.id == viewModel.visibleGroups.last?.id,
                             selectionProvider: { viewModel.isSelected(assetID: $0, in: group.id) },
                             onToggle: { assetID in viewModel.toggleSelection(assetID: assetID, groupID: group.id) },
                             onSelectAll: { viewModel.selectAll(in: group.id) },
                             onDeselectAll: { viewModel.deselectAll(in: group.id) },
+                            onDismiss: { viewModel.dismissGroup(group.id) },
                             onPreview: { asset in
                                 previewAsset = DuplicateAssetPreviewContext(asset: asset)
                             }
@@ -276,16 +288,6 @@ struct DuplicateReviewView: View {
         .background(Color(.systemBackground))
     }
     
-    private var badgeHeader: some View {
-        HStack {
-            Spacer()
-            BetaCornerBadge()
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
-        .allowsHitTesting(false)
-    }
 }
 
 // MARK: - Group Section
@@ -297,6 +299,7 @@ private struct DuplicateGroupSection: View {
     let onToggle: (String) -> Void
     let onSelectAll: () -> Void
     let onDeselectAll: () -> Void
+    let onDismiss: () -> Void
     let onPreview: (PHAsset) -> Void
     
     var body: some View {
@@ -341,17 +344,29 @@ private struct DuplicateGroupSection: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
-            Menu {
-                Button("Select all for deletion") {
-                    onSelectAll()
+            HStack(spacing: 12) {
+                // Dismiss button - mark group as not duplicates
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary)
+                        .symbolVariant(.fill)
                 }
-                Button("Clear selection") {
-                    onDeselectAll()
+                .help("Dismiss - these are not duplicates")
+                
+                // Menu for selection actions
+                Menu {
+                    Button("Select all for deletion") {
+                        onSelectAll()
+                    }
+                    Button("Clear selection") {
+                        onDeselectAll()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 18))
+                        .foregroundColor(.secondary)
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 18))
-                    .foregroundColor(.secondary)
             }
         }
     }
@@ -438,7 +453,7 @@ private struct DuplicateAssetThumbnail: View {
         }
     }
     
-    private var distanceDescription: String {
+    private var distanceDescription: LocalizedStringKey {
         if distanceScore == 0 {
             return "Reference"
         } else if distanceScore < 0.06 {
@@ -460,7 +475,7 @@ private struct DuplicateAssetThumbnail: View {
         }
     }
     
-    private var selectionLabel: String {
+    private var selectionLabel: LocalizedStringKey {
         if isSelected {
             return "Marked to delete"
         } else if isPrimary {

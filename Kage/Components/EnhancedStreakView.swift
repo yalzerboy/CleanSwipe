@@ -224,37 +224,41 @@ struct EnhancedStreakView: View {
             }
             
             // Enhanced progress bar with icon
-            ZStack(alignment: .leading) {
-                // Background track
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.systemGray5))
-                    .frame(height: 16)
-                
-                // Progress fill
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.orange, .orange.opacity(0.8)]),
-                            startPoint: .leading,
-                            endPoint: .trailing
+            GeometryReader { geometry in
+                let barWidth = geometry.size.width
+                ZStack(alignment: .leading) {
+                    // Background track
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(.systemGray5))
+                        .frame(height: 16)
+                    
+                    // Progress fill
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(
+                            LinearGradient(
+                                gradient: Gradient(colors: [.orange, .orange.opacity(0.8)]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
                         )
-                    )
-                    .frame(width: max(0, CGFloat(streakManager.getStreakProgress()) * (UIScreen.main.bounds.width - 80)), height: 16)
-                
-                // Progress icon at current position
-                if streakManager.getStreakProgress() > 0 {
-                    ZStack {
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 24, height: 24)
-                        
-                        Image(systemName: "flame.fill")
-                            .foregroundColor(.orange)
-                            .font(.system(size: 12, weight: .bold))
+                        .frame(width: max(0, CGFloat(streakManager.getStreakProgress()) * barWidth), height: 16)
+                    
+                    // Progress icon at current position
+                    if streakManager.getStreakProgress() > 0 {
+                        ZStack {
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 24, height: 24)
+                            
+                            Image(systemName: "flame.fill")
+                                .foregroundColor(.orange)
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        .offset(x: max(0, CGFloat(streakManager.getStreakProgress()) * barWidth - 12))
                     }
-                    .offset(x: max(0, CGFloat(streakManager.getStreakProgress()) * (UIScreen.main.bounds.width - 80) - 12))
                 }
             }
+            .frame(height: 24)
             .padding(.horizontal, 4)
             
             Button("View All Milestones") {
@@ -321,9 +325,9 @@ struct EnhancedStreakView: View {
 
 struct StreakStatCard: View {
     let icon: String
-    let title: String
+    let title: LocalizedStringKey
     let value: String
-    let subtitle: String
+    let subtitle: LocalizedStringKey
     let color: Color
     
     var body: some View {
@@ -389,6 +393,7 @@ struct StreakMilestonesView: View {
                 }
             }
         }
+        .navigationViewStyle(.stack)
     }
 }
 

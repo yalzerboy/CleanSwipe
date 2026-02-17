@@ -39,7 +39,6 @@ class PurchaseManager: NSObject, ObservableObject {
     enum PlacementIdentifier: String {
         case homePostOnboarding = "home_post_onboarding"  // Post-onboarding offer
         case featureGate = "feature_gate"                 // Premium feature paywall (used for all feature gates)
-        case saleOffer = "sale_offer"                     // Sale/promotional offers
     }
     
     // MARK: - Singleton
@@ -51,7 +50,9 @@ class PurchaseManager: NSObject, ObservableObject {
     }
 
     // Public read-only access for UI to display the free daily swipe limit (global)
-    var freeDailySwipes: Int { maxDailySwipes }
+    var freeDailySwipes: Int { 
+        maxDailySwipes + StreakManager.shared.dailyLimitBonus
+    }
     
     // MARK: - Configuration
     func configure() async {
@@ -146,6 +147,11 @@ class PurchaseManager: NSObject, ObservableObject {
                 purchaseState = .success
                 await checkSubscriptionStatus()
 
+                // Record detailed happiness event
+                await MainActor.run {
+                     HappinessEngine.shared.record(.subscribe)
+                }
+
                 // Track successful purchase
                 AnalyticsManager.shared.trackPurchaseCompleted(
                     productId: weeklyProductID,
@@ -171,6 +177,11 @@ class PurchaseManager: NSObject, ObservableObject {
             invalidateCache()
             await checkSubscriptionStatus()
             purchaseState = .success
+
+            // Record detailed happiness event
+            await MainActor.run {
+                 HappinessEngine.shared.record(.subscribe)
+            }
 
         } catch {
             purchaseState = .failed(error)
@@ -269,7 +280,7 @@ class PurchaseManager: NSObject, ObservableObject {
 
     func checkAndTrackDailyLimit() {
         // Check if user just hit daily limit
-        let isAtLimit = dailySwipeCount >= maxDailySwipes && rewardedSwipesRemaining == 0
+        let isAtLimit = dailySwipeCount >= freeDailySwipes && rewardedSwipesRemaining == 0
         let wasAtLimitKey = "was_at_daily_limit"
 
         if isAtLimit && !UserDefaults.standard.bool(forKey: wasAtLimitKey) {
@@ -307,7 +318,7 @@ class PurchaseManager: NSObject, ObservableObject {
             return true
         case .notSubscribed, .expired:
             // Check global daily swipe count across all filters
-            return rewardedSwipesRemaining > 0 || dailySwipeCount < maxDailySwipes
+            return rewardedSwipesRemaining > 0 || dailySwipeCount < freeDailySwipes
         }
     }
     
@@ -365,6 +376,8 @@ class PurchaseManager: NSObject, ObservableObject {
         // Sync attributes immediately so they're available for targeting
         do {
             try await Purchases.shared.syncAttributesAndOfferingsIfNeeded()
+            // Invalidate cache after syncing attributes so fresh offerings are fetched
+            invalidateCache()
         } catch {
         }
     }
@@ -382,25 +395,41 @@ class PurchaseManager: NSObject, ObservableObject {
     // MARK: - RevenueCat Placements
 
     /// Fetches the offering for a specific placement
-    /// - Parameter placementIdentifier: The placement identifier (must match the one in RevenueCat Dashboard)
-    /// - Returns: The Offering for this placement if configured, otherwise falls back to the default current offering
-    /// - Note: Returns the placement-specific offering if targeting rule matches, otherwise returns the default offering
-    func getOffering(forPlacement placementIdentifier: String) async -> Offering? {
+    /// - Parameters:
+    ///   - placementIdentifier: The placement identifier (must match the one in RevenueCat Dashboard)
+    ///   - allowFallback: If true, falls back to default offering when placement doesn't match. If false, returns nil when targeting rule doesn't match.
+    /// - Returns: The Offering for this placement if configured and targeting rule matches, otherwise returns fallback or nil based on allowFallback
+    /// - Note: For placements with strict targeting (like home_post_onboarding), set allowFallback to false
+    func getOffering(forPlacement placementIdentifier: String, allowFallback: Bool = true) async -> Offering? {
         guard isConfigured else { return nil }
 
-        // Use cached offerings if still valid
+        // For conditional placements (allowFallback: false), invalidate cache to ensure fresh offerings with updated attributes
+        // For regular placements, use cached offerings if still valid
         let offerings: Offerings
-        if let cached = cachedOfferings,
-           let lastFetched = offeringsLastFetched,
-           Date().timeIntervalSince(lastFetched) < cacheValiditySeconds {
-            offerings = cached
-        } else {
+        if !allowFallback {
+            // Invalidate cache for conditional placements to ensure attributes are synced
+            invalidateCache()
             do {
                 offerings = try await Purchases.shared.offerings()
                 cachedOfferings = offerings
                 offeringsLastFetched = Date()
             } catch {
                 return nil
+            }
+        } else {
+            // Use cached offerings if still valid for regular placements
+            if let cached = cachedOfferings,
+               let lastFetched = offeringsLastFetched,
+               Date().timeIntervalSince(lastFetched) < cacheValiditySeconds {
+                offerings = cached
+            } else {
+                do {
+                    offerings = try await Purchases.shared.offerings()
+                    cachedOfferings = offerings
+                    offeringsLastFetched = Date()
+                } catch {
+                    return nil
+                }
             }
         }
 
@@ -409,16 +438,15 @@ class PurchaseManager: NSObject, ObservableObject {
             // Placement exists and targeting rule matches (or fallback offering is configured)
             return placementOffering
         }
-        // If placement doesn't exist or no targeting rule matches, fall back to default offering
-        // This ensures we still show a paywall even if placement isn't configured yet
-        return offerings.current
-    }
-    
-    /// Fetches the sale offer offering
-    /// - Returns: The Offering for sale offers, or nil if no sale is active
-    /// - Note: Use this method to check if a sale is active and show the sale paywall
-    func getSaleOffer() async -> Offering? {
-        return await getOffering(forPlacement: PlacementIdentifier.saleOffer.rawValue)
+        
+        // If placement doesn't exist or no targeting rule matches
+        if allowFallback {
+            // Fall back to default offering (for feature gates that should always show something)
+            return offerings.current
+        } else {
+            // Return nil when targeting rule doesn't match (for conditional placements like post-onboarding)
+            return nil
+        }
     }
     
     // Debug controls removed for production

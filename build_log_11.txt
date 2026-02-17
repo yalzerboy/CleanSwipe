@@ -1,0 +1,13 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project Kage.xcodeproj -scheme Kage -destination "platform=iOS Simulator,name=iPhone 17 Pro" build
+
+Resolve Package Graph
+Source files for target SwiftProtobufPlugin should be located under 'Plugins/SwiftProtobufPlugin', 'Plugins', or a custom sources path can be set with the 'path' property in Package.swifttarget 'SwiftProtobufPlugin' referenced in product 'SwiftProtobufPlugin' is emptySource files for target FBLPromises should be located under 'Sources/FBLPromises', or a custom sources path can be set with the 'path' property in Package.swiftinvalid custom path 'LocalReceiptParsing' for target 'ReceiptParser'invalid custom path 'GoogleMobileAdsTarget' for target 'GoogleMobileAdsTarget'invalid custom path 'UserMessagingPlatformTarget' for target 'UserMessagingPlatformTarget'
+2025-12-19 22:21:19.644 xcodebuild[37562:205848] Writing error result bundle to /var/folders/vj/z3zr1mz90hs347gx8770g2pm0000gn/T/ResultBundle_2025-19-12_22-21-0019.xcresult
+xcodebuild: error: Could not resolve package dependencies:
+  target 'SwiftProtobufPlugin' referenced in product 'SwiftProtobufPlugin' is empty
+  Source files for target FBLPromises should be located under 'Sources/FBLPromises', or a custom sources path can be set with the 'path' property in Package.swift
+  invalid custom path 'LocalReceiptParsing' for target 'ReceiptParser'
+  invalid custom path 'GoogleMobileAdsTarget' for target 'GoogleMobileAdsTarget'
+  invalid custom path 'UserMessagingPlatformTarget' for target 'UserMessagingPlatformTarget'
+

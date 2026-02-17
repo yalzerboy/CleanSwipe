@@ -2,14 +2,14 @@ import SwiftUI
 
 struct MenuRow: View {
     let icon: String
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
     let isSelected: Bool
     let count: Int?
     let processedCount: Int?
     let action: () -> Void
     
-    init(icon: String, title: String, subtitle: String, isSelected: Bool, count: Int? = nil, processedCount: Int? = nil, action: @escaping () -> Void) {
+    init(icon: String, title: LocalizedStringKey, subtitle: LocalizedStringKey, isSelected: Bool, count: Int? = nil, processedCount: Int? = nil, action: @escaping () -> Void) {
         self.icon = icon
         self.title = title
         self.subtitle = subtitle
@@ -18,6 +18,7 @@ struct MenuRow: View {
         self.processedCount = processedCount
         self.action = action
     }
+
     
     var body: some View {
         HStack {
@@ -63,8 +64,8 @@ struct MenuRow: View {
 
 struct AsyncMenuRow: View {
     let icon: String
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
     let isSelected: Bool
     let processedCount: Int?
     let action: () -> Void
@@ -106,7 +107,7 @@ struct AsyncMenuRow: View {
                         let isComplete = remainingCount == 0
                         
                         HStack(spacing: 4) {
-                            Text("\(processedCount) of \(totalCount) \(contentTypeText) processed")
+                            Text(LocalizedStringKey("\(processedCount) of \(totalCount) \(contentTypeText) processed"))
                                 .font(.system(size: 14))
                                 .foregroundColor(isComplete ? .green : .orange)
                             

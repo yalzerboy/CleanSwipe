@@ -32,6 +32,7 @@ xcuserdata/
 Packages/
 Package.pins
 Package.resolved
+SourcePackages/
 
 # CocoaPods
 Pods/
@@ -84,6 +85,13 @@ REVENUECAT_ATTRIBUTES_AND_PLACEMENTS.md
 # Temporary directories that may be created
 .derivedDataTemp/
 .temp/
+
+
+
+
+
+
+
 
 
 

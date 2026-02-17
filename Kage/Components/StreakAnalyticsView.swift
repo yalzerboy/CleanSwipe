@@ -46,6 +46,7 @@ struct StreakAnalyticsView: View {
             .navigationTitle("Streak Analytics")
             .navigationBarTitleDisplayMode(.large)
         }
+        .navigationViewStyle(.stack)
         .sheet(isPresented: $showingRewards) {
             RewardsView()
         }
@@ -392,9 +393,9 @@ struct StreakAnalyticsView: View {
 // MARK: - Supporting Views
 
 struct StatCircle: View {
-    let title: String
+    let title: LocalizedStringKey
     let value: String
-    let subtitle: String
+    let subtitle: LocalizedStringKey
     let color: Color
     let icon: String
     
@@ -478,7 +479,7 @@ struct CalendarDayView: View {
 }
 
 struct AnalyticsRow: View {
-    let title: String
+    let title: LocalizedStringKey
     let value: String
     let icon: String
     let color: Color
@@ -565,6 +566,7 @@ struct RewardsView: View {
                 }
             }
         }
+        .navigationViewStyle(.stack)
     }
 }
 

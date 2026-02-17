@@ -39,6 +39,7 @@ class StreakManager: ObservableObject {
     @Published var totalPhotosToReview: Int = 0
     @Published var totalStoragePotential: String = "0 MB"
     @Published var streakMilestones: [StreakMilestone] = []
+    @Published var dailyLimitBonus: Int = 0
     @Published private(set) var swipeActivityDays: Set<Date> = []
     
     // MARK: - Constants
@@ -82,6 +83,11 @@ class StreakManager: ObservableObject {
         // Update streak
         updateStreak(for: today)
         recordSwipeDay(today)
+        
+        // Record happiness event for maintaining streak
+        if currentStreak >= 3 {
+            HappinessEngine.shared.record(.maintainStreak)
+        }
         
         // Update last activity date
         lastActivityDate = today
@@ -257,6 +263,9 @@ class StreakManager: ObservableObject {
         
         // Update longest streak
         longestStreak = max(longestStreak, currentStreak)
+        
+        // Update daily limit bonus: +10 swipes for each day of streak
+        dailyLimitBonus = currentStreak * 10
     }
     
     private func calculateTodayStatsAsync() async {
@@ -265,11 +274,26 @@ class StreakManager: ObservableObject {
             return
         }
         
-        let allPhotos = await getAllPhotosToReview()
-        let storage = await calculateTotalStoragePotential(allPhotos)
+        // 1. Efficiently get the counts using PHFetchResult
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.includeHiddenAssets = false
+        
+        // Fetch all non-hidden assets
+        let allAssets = PHAsset.fetchAssets(with: fetchOptions)
+        let totalCount = allAssets.count
+        
+        // Fetch processed assets count efficiently
+        let globalProcessedPhotoIds = Set(UserDefaults.standard.stringArray(forKey: "globalProcessedPhotoIds") ?? [])
+        let processedAssets = PHAsset.fetchAssets(withLocalIdentifiers: Array(globalProcessedPhotoIds), options: fetchOptions)
+        let processedCount = processedAssets.count
+        
+        let photosToReviewCount = max(0, totalCount - processedCount)
+        
+        // 2. Efficiently estimate storage potential
+        let storage = await calculateTotalStoragePotential(allAssets: allAssets, photosToReviewCount: photosToReviewCount)
         
         await MainActor.run {
-            self.totalPhotosToReview = allPhotos.count
+            self.totalPhotosToReview = photosToReviewCount
             self.totalStoragePotential = storage
             self.saveCachedStats()
         }
@@ -284,60 +308,59 @@ class StreakManager: ObservableObject {
         }
     }
     
-    private func getAllPhotosToReview() async -> [PHAsset] {
-        // Use more efficient fetch options
-        let fetchOptions = PHFetchOptions()
-        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        // Don't include hidden assets for faster processing
-        fetchOptions.includeHiddenAssets = false
-        
-        let fetchResult = PHAsset.fetchAssets(with: fetchOptions)
-        
-        // Convert to array more efficiently
-        let allPhotos = (0..<fetchResult.count).compactMap { index in
-            fetchResult.object(at: index)
-        }
-        
-        // Filter out photos that have already been processed (swiped) in ANY filter
-        // Use globalProcessedPhotoIds which tracks ALL photos processed across all filters
-        let globalProcessedPhotoIds = Set(UserDefaults.standard.stringArray(forKey: "globalProcessedPhotoIds") ?? [])
-        
-        let photosToReview = allPhotos.filter { photo in
-            !globalProcessedPhotoIds.contains(photo.localIdentifier)
-        }
-        
-        return photosToReview
-    }
-    
-    private func calculateTotalStoragePotential(_ photos: [PHAsset]) async -> String {
-        // Early return if no photos
-        guard !photos.isEmpty else {
+    private func calculateTotalStoragePotential(allAssets: PHFetchResult<PHAsset>, photosToReviewCount: Int) async -> String {
+        // Early return if no photos to review
+        guard photosToReviewCount > 0 && allAssets.count > 0 else {
             return "0 MB"
         }
         
-        // For performance, sample photos instead of calculating all
-        // If we have many photos, sample a subset and extrapolate
-        let sampleSize = min(photos.count, 100) // Sample max 100 photos
-        let step = max(1, photos.count / sampleSize)
+        // For performance, sample photos from the library instead of calculating all
+        // We use the whole library for sampling to get a representative average file size
+        let totalCount = allAssets.count
+        let targetSampleSize = 100
+        let step = max(1, totalCount / targetSampleSize)
         
         var totalBytes: Int64 = 0
         var sampleCount = 0
         
-        for i in stride(from: 0, to: photos.count, by: step) {
-            let photo = photos[i]
+        for i in Swift.stride(from: 0, to: totalCount, by: step) {
+            let photo = allAssets.object(at: i)
             if let fileSize = await PhotoLibraryCache.shared.fileSize(for: photo) {
                 totalBytes += fileSize
                 sampleCount += 1
             }
+            if sampleCount >= targetSampleSize { break }
         }
         
-        // If we sampled, extrapolate the total
-        if sampleCount > 0 && photos.count > sampleSize {
+        // If we sampled, extrapolate the total based on photosToReviewCount
+        if sampleCount > 0 {
             let averageSize = totalBytes / Int64(sampleCount)
-            totalBytes = averageSize * Int64(photos.count)
+            
+            // Be more conservative: apply a 0.75x factor to account for iCloud optimization 
+            // and the fact that not all assets contribute equally to on-disk space.
+            let conservativeAverageSize = Double(averageSize) * 0.75
+            var estimatedTotalBytes = Int64(conservativeAverageSize * Double(photosToReviewCount))
+            
+            // Cap at device physical capacity
+            if let systemSize = getSystemSize() {
+                // Also be conservative with system size - max 90% of disk space
+                estimatedTotalBytes = min(estimatedTotalBytes, Int64(Double(systemSize) * 0.9))
+            }
+            
+            return ByteCountFormatter.string(fromByteCount: estimatedTotalBytes, countStyle: .file)
         }
         
-        return ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return "0 MB"
+    }
+    
+    private func getSystemSize() -> Int64? {
+        let fileManager = FileManager.default
+        let path = NSHomeDirectory()
+        if let attributes = try? fileManager.attributesOfFileSystem(forPath: path),
+           let totalSize = attributes[.systemSize] as? Int64 {
+            return totalSize
+        }
+        return nil
     }
     
     private func scheduleStreakNotifications() {
@@ -348,8 +371,8 @@ class StreakManager: ObservableObject {
             // Schedule urgent streak reminder
             NotificationManager.shared.scheduleStreakAtRiskNotification(currentStreak: currentStreak)
         case .activeToday:
-            // Schedule motivational reminder for later in the day
-            NotificationManager.shared.scheduleMotivationalReminder()
+            // User is active today - no additional reminders needed
+            break
         default:
             break
         }
@@ -364,6 +387,9 @@ class StreakManager: ObservableObject {
             streakMilestones.append(milestone)
             saveStreakData()
             NotificationManager.shared.scheduleStreakMilestoneNotification(milestone: milestone)
+            
+            // Record happiness event
+            HappinessEngine.shared.record(.achievementUnlock)
         }
     }
     
@@ -381,6 +407,9 @@ class StreakManager: ObservableObject {
         // Calculate available streak freezes
         updateStreakFreezeAvailability()
         loadSwipeDays()
+        
+        // Initial calculation of bonus
+        dailyLimitBonus = currentStreak * 10
     }
     
     private func saveStreakData() {

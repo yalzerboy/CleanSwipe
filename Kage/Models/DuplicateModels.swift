@@ -7,12 +7,13 @@
 
 import Foundation
 import Photos
+import SwiftUI
 
 enum DuplicateGroupKind {
     case exact
     case verySimilar
     
-    var title: String {
+    var title: LocalizedStringKey {
         switch self {
         case .exact:
             return "Exact duplicates"
@@ -43,17 +44,9 @@ struct DuplicateGroup: Identifiable {
     let assets: [DuplicateAssetItem]
     let representativeDate: Date?
     
-    var subtitle: String {
+    var subtitle: LocalizedStringKey {
         let count = assets.count
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d, yyyy"
-        
-        var components: [String] = []
-        components.append("\(count) photos")
-        if let date = representativeDate {
-            components.append(formatter.string(from: date))
-        }
-        return components.joined(separator: " • ")
+        return "\(count) photos"
     }
     
     var primaryAsset: DuplicateAssetItem? {

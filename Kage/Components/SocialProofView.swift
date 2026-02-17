@@ -230,17 +230,17 @@ struct SocialProofView: View {
 // MARK: - Testimonial Model
 struct Testimonial {
     let name: String
-    let text: String
+    let text: LocalizedStringKey
     let rating: Int
-    let date: String
+    let date: LocalizedStringKey
     let avatar: String
 }
 
 // MARK: - Social Proof Stat Card
 struct SocialProofStatCard: View {
     let icon: String
-    let number: String
-    let label: String
+    let number: LocalizedStringKey
+    let label: LocalizedStringKey
     let color: Color
     
     @State private var animateNumber = false

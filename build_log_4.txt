@@ -1,0 +1,10 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project Kage.xcodeproj -scheme Kage -destination "platform=iOS Simulator,name=iPhone 17 Pro" build
+
+Resolve Package Graph
+public headers ("include") directory path for 'SwiftProtobuf' is invalid or not contained in the target
+2025-12-19 22:06:33.694 xcodebuild[18021:130779] Writing error result bundle to /var/folders/vj/z3zr1mz90hs347gx8770g2pm0000gn/T/ResultBundle_2025-19-12_22-06-0033.xcresult
+xcodebuild: error: Could not resolve package dependencies:
+  public headers ("include") directory path for 'SwiftProtobuf' is invalid or not contained in the target
+
+Found unhandled resource at /Users/yalun/Library/Developer/Xcode/DerivedData/Kage-cotcvhpcgffouaadkgczhxwmxdtk/SourcePackages/checkouts/swift-protobuf/Sources/SwiftProtobuf/PrivacyInfo.xcprivacy

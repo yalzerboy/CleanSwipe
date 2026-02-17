@@ -42,7 +42,7 @@ struct PaywallView: View {
 struct PaywallViewControllerRepresentable: UIViewControllerRepresentable {
     let offering: Offering
     let onPackageSelected: (Package) -> Void
-    
+
     func makeUIViewController(context: Context) -> PaywallViewController {
         let controller = PaywallViewController(offering: offering, displayCloseButton: true) { controller in
             // Handle dismiss request

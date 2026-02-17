@@ -1,6 +1,6 @@
 //
-//  CleanSwipeApp.swift
-//  CleanSwipe
+//  KageApp.swift
+//  Kage
 //
 //  Created by Yalun Zhang on 27/06/2025.
 //
@@ -33,6 +33,7 @@ struct KageApp: App {
     @StateObject private var purchaseManager = PurchaseManager.shared
     @StateObject private var notificationManager = NotificationManager.shared
     @StateObject private var streakManager = StreakManager.shared
+    @StateObject private var happinessEngine = HappinessEngine.shared
     @State private var hasIncrementedLaunchCount = false
     
     init() {
@@ -95,6 +96,7 @@ struct KageApp: App {
                         .environmentObject(purchaseManager)
                         .environmentObject(notificationManager)
                         .environmentObject(streakManager)
+                        .environmentObject(happinessEngine)
                 }
             }
             .sheet(isPresented: $showingMailComposer) {
@@ -143,7 +145,10 @@ struct KageApp: App {
                     processPendingQuickActionIfNeeded()
                 }
                 
-                // Debug: Print onboarding status
+                // Clear notification badge on first launch
+                if #available(iOS 16.0, *) {
+                    UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
+                }
                 
                 // Configure RevenueCat IMMEDIATELY during splash (now truly non-blocking)
                 // This ensures it's ready for the onboarding paywall
@@ -159,17 +164,26 @@ struct KageApp: App {
                     }
                 }
                 
-                // Increment launch count and check for review prompt on app launch
-                if hasCompletedOnboarding && hasPhotoAccess() && !hasIncrementedLaunchCount {
-                    incrementLaunchCountAndCheckReview()
-                    hasIncrementedLaunchCount = true
+                // Record app launch for happiness engine
+                if hasCompletedOnboarding && hasPhotoAccess() {
+                    happinessEngine.record(.appOpen)
+                    
+                    // Preload Smart Cleanup data in background for faster access later
+                    SmartCleaningService.shared.preloadHubModesInBackground()
                 }
             }
             .onChange(of: scenePhase) { newPhase in
                 if newPhase == .active {
                     processPendingQuickActionIfNeeded()
-                    // Check if we should show review prompt (without incrementing launch count)
-                    checkReviewPrompt()
+                    
+                    // Record app open for smart notification scheduling
+                    notificationManager.recordAppOpen()
+                    happinessEngine.record(.appOpen)
+                    
+                    // Clear notification badge when app becomes active
+                    if #available(iOS 16.0, *) {
+                        UNUserNotificationCenter.current().setBadgeCount(0) { _ in }
+                    }
 
                     // Track app foreground
                     AnalyticsManager.shared.trackAppForeground()
@@ -307,49 +321,8 @@ struct KageApp: App {
         }
     }
     
-    // MARK: - Review Prompt
-    
-    private func incrementLaunchCountAndCheckReview() {
-        // Only show review prompt after onboarding is complete
-        guard hasCompletedOnboarding && hasPhotoAccess() else { return }
-        
-        let launchCountKey = "appLaunchCount"
-        
-        // Increment launch count
-        let currentLaunchCount = UserDefaults.standard.integer(forKey: launchCountKey)
-        let newLaunchCount = currentLaunchCount + 1
-        UserDefaults.standard.set(newLaunchCount, forKey: launchCountKey)
-        
-        // Check if we should request review after incrementing
-        checkReviewPrompt()
-    }
-    
-    private func checkReviewPrompt() {
-        // Only show review prompt after onboarding is complete
-        guard hasCompletedOnboarding && hasPhotoAccess() else { return }
-        
-        let launchCountKey = "appLaunchCount"
-        let hasRequestedReviewKey = "hasRequestedAppReview"
-        
-        // Get current launch count
-        let launchCount = UserDefaults.standard.integer(forKey: launchCountKey)
-        
-        // Check if we should request review
-        let hasRequestedReview = UserDefaults.standard.bool(forKey: hasRequestedReviewKey)
-        
-        // Show review prompt if user has opened app more than twice and hasn't reviewed yet
-        if launchCount > 2 && !hasRequestedReview {
-            // Get the window scene
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                // Request review using Apple's native modal
-                // This shows "Enjoying Kage? Tap a star to rate it on the App Store" with stars and "Not Now" button
-                SKStoreReviewController.requestReview(in: windowScene)
-                
-                // Mark that we've requested review (Apple's system will handle rate limiting)
-                UserDefaults.standard.set(true, forKey: hasRequestedReviewKey)
-            }
-        }
-    }
+    // MARK: - Legacy Review Prompt (Replaced by HappinessEngine)
+    // Old methods removed to prevent conflicts
 }
 
 // MARK: - Notification Delegate

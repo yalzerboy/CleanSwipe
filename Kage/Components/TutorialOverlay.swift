@@ -86,7 +86,7 @@ struct TutorialOverlay: View {
                                 .font(.system(size: 16))
                                 .foregroundColor(.green)
                             
-                            Text("Photos are processed in batches of 10")
+                            Text("Photos are processed in batches of 15")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundColor(.white.opacity(0.9))
                             
@@ -163,7 +163,7 @@ struct TutorialOverlay: View {
 // MARK: - Tutorial Feature Row Helper
 struct TutorialFeatureRow: View {
     let icon: String
-    let text: String
+    let text: LocalizedStringKey
     
     var body: some View {
         HStack(spacing: 12) {

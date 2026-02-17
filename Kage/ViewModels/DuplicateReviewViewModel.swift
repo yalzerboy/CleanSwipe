@@ -8,6 +8,7 @@
 import Foundation
 import Photos
 import SwiftUI
+import OSLog
 
 @MainActor
 final class DuplicateReviewViewModel: ObservableObject {
@@ -20,14 +21,22 @@ final class DuplicateReviewViewModel: ObservableObject {
     @Published private(set) var deletionMessage: String?
     @Published private(set) var scanProgress: Double?
     @Published private(set) var isScanningWithProgress = false
-    
+
+    // Computed property to get visible groups (excluding dismissed ones)
+    var visibleGroups: [DuplicateGroup] {
+        groups.filter { !dismissedGroupIDs.contains($0.id) }
+    }
+
     private(set) var lastLoadedPage: Int = -1
     private let pageSize: Int
     private let detectionService = DuplicateDetectionService.shared
-    
+    private let logger = Logger(subsystem: "com.yalun.CleanSwipe", category: "DuplicateReviewViewModel")
+
     private var selection: [UUID: Set<String>] = [:]
     private var excludedAssetIDs: Set<String> = []
+    private var dismissedGroupIDs: Set<UUID> = []  // Track dismissed groups
     private var currentScanID = UUID()
+    private(set) var hasPerformedInitialLoad = false
     
     init(pageSize: Int = 6) {
         self.pageSize = pageSize
@@ -44,15 +53,26 @@ final class DuplicateReviewViewModel: ObservableObject {
     
     private func performReload(userInitiated: Bool) async {
         let hasAccess = await ensurePhotoAccess()
-        
+
         guard hasAccess else {
             groups = []
             selection = [:]
             hasMore = false
-            errorMessage = "CleanSwipe needs access to your photo library to find duplicates. You can enable access in Settings."
+            errorMessage = "Kage needs access to your photo library to find duplicates. You can enable access in Settings."
             return
         }
-        
+
+        // If we have cached results and this isn't a user-initiated fresh scan, just load the existing results
+        if !userInitiated {
+            let hasCachedResults = await detectionService.hasCachedResults()
+            if hasCachedResults {
+                logger.info("Loading cached duplicate results")
+                await loadExistingResults()
+                hasPerformedInitialLoad = true
+                return
+            }
+        }
+
         lastLoadedPage = -1
         groups = []
         selection = [:]
@@ -62,9 +82,28 @@ final class DuplicateReviewViewModel: ObservableObject {
             excludedAssetIDs = []
         }
         currentScanID = UUID()
-        await loadNextPage(forceRefresh: true, allowDeepScan: userInitiated)
+        hasPerformedInitialLoad = true
+        await loadNextPage(forceRefresh: !userInitiated, allowDeepScan: userInitiated)
     }
-    
+
+    private func loadExistingResults() async {
+        do {
+            let (clusters, moreAvailable) = try await detectionService.groups(page: 0,
+                                                                              pageSize: pageSize,
+                                                                              forceRefresh: false,
+                                                                              allowDeepScan: false,
+                                                                              excludedAssetIDs: excludedAssetIDs,
+                                                                              findMoreDuplicates: false)
+            let converted = await convert(clusters: clusters)
+            groups = converted
+            hasMore = moreAvailable
+            lastLoadedPage = 0
+            updateDefaultSelection(for: converted)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func ensurePhotoAccess() async -> Bool {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         switch status {
@@ -90,7 +129,7 @@ final class DuplicateReviewViewModel: ObservableObject {
         }
     }
     
-    func loadNextPage(forceRefresh: Bool, allowDeepScan: Bool = false) async {
+    func loadNextPage(forceRefresh: Bool, allowDeepScan: Bool = false, findMoreDuplicates: Bool = false) async {
         guard !isLoading else { return }
         
         if lastLoadedPage >= 0 {
@@ -126,6 +165,7 @@ final class DuplicateReviewViewModel: ObservableObject {
                                                                               forceRefresh: forceRefresh && targetPage == 0,
                                                                               allowDeepScan: allowDeepScan && targetPage == 0,
                                                                               excludedAssetIDs: excludedAssetIDs,
+                                                                              findMoreDuplicates: findMoreDuplicates,
                                                                               progressHandler: { [weak self, shouldTrackProgress, scanID] progress in
                                                                                 guard shouldTrackProgress,
                                                                                       let self else { return }
@@ -321,8 +361,25 @@ final class DuplicateReviewViewModel: ObservableObject {
     }
     
     func requestMoreDuplicates() {
-        let currentAssetIDs = groups.flatMap { $0.assets.map(\.id) }
-        excludedAssetIDs.formUnion(currentAssetIDs)
+        // Exclude all currently visible groups to find different duplicates
+        let currentVisibleAssetIDs = visibleGroups.flatMap { $0.assets.map(\.id) }
+        excludedAssetIDs.formUnion(currentVisibleAssetIDs)
+        currentScanID = UUID()
+        // Force refresh to scan a different batch and find new duplicates
+        Task { await loadNextPage(forceRefresh: true, allowDeepScan: true, findMoreDuplicates: true) }
+    }
+
+    func dismissGroup(_ groupID: UUID) {
+        dismissedGroupIDs.insert(groupID)
+        // Also remove selection for this group
+        selection[groupID] = nil
+        objectWillChange.send()
+    }
+
+    func scanAgain() {
+        // Clear excluded assets and dismissed groups for a fresh scan
+        excludedAssetIDs = []
+        dismissedGroupIDs.removeAll()
         currentScanID = UUID()
         reload(userInitiated: true)
     }
@@ -333,6 +390,7 @@ final class DuplicateReviewViewModel: ObservableObject {
         isLoadingMore = false
         isScanningWithProgress = false
         scanProgress = nil
+        errorMessage = nil // Clear any error state when canceling
     }
 
     func cancelDeletionIfPossible() {
@@ -341,6 +399,10 @@ final class DuplicateReviewViewModel: ObservableObject {
         if deletionInProgress {
             deletionInProgress = false
         }
+    }
+
+    func clearErrorState() {
+        errorMessage = nil
     }
 }
 

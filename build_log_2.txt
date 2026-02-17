@@ -1,0 +1,25 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project Kage.xcodeproj -scheme Kage -destination "platform=iOS Simulator,name=iPhone 17 Pro" build
+
+Resolve Package Graph
+
+Creating working copy of package ‘swift-protobuf’
+
+Checking out 1.33.3 of package ‘swift-protobuf’
+Couldn’t update repository submodules:
+    Submodule 'Sources/protobuf/abseil' (https://github.com/abseil/abseil-cpp) registered for path 'Sources/protobuf/abseil'
+    Submodule 'Sources/protobuf/protobuf' (https://github.com/protocolbuffers/protobuf) registered for path 'Sources/protobuf/protobuf'
+    Cloning into '/Users/yalun/Library/Developer/Xcode/DerivedData/Kage-cotcvhpcgffouaadkgczhxwmxdtk/SourcePackages/checkouts/swift-protobuf/Sources/protobuf/abseil'...
+    Cloning into '/Users/yalun/Library/Developer/Xcode/DerivedData/Kage-cotcvhpcgffouaadkgczhxwmxdtk/SourcePackages/checkouts/swift-protobuf/Sources/protobuf/protobuf'...
+    fatal: could not open '/Users/yalun/Library/Developer/Xcode/DerivedData/Kage-cotcvhpcgffouaadkgczhxwmxdtk/SourcePackages/checkouts/swift-protobuf/.git/modules/Sources/protobuf/protobuf/objects/pack/tmp_pack_mfIBvq' for reading: No such file or directory
+    fatal: fetch-pack: invalid index-pack output
+    fatal: clone of 'https://github.com/protocolbuffers/protobuf' into submodule path '/Users/yalun/Library/Developer/Xcode/DerivedData/Kage-cotcvhpcgffouaadkgczhxwmxdtk/SourcePackages/checkouts/swift-protobuf/Sources/protobuf/protobuf' failed
+    Failed to clone 'Sources/protobuf/protobuf'. Retry scheduled
+    fatal: Unable to read current working directory: No such file or directory
+    Failed to clone 'Sources/protobuf/protobuf' a second time, aborting
+fatalError
+2025-12-19 22:03:41.477 xcodebuild[12107:116191] Writing error result bundle to /var/folders/vj/z3zr1mz90hs347gx8770g2pm0000gn/T/ResultBundle_2025-19-12_22-03-0041.xcresult
+xcodebuild: error: Could not resolve package dependencies:
+  fatalError
+  Couldn’t update repository submodules:
+

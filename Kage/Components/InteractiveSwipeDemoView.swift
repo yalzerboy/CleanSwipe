@@ -16,22 +16,22 @@ struct InteractiveSwipeDemoView: View {
             id: 1,
             imageName: nil,
             systemIcon: "photo",
-            name: "Screenshot",
-            description: "Old screenshot"
+            nameKey: "Screenshot",
+            descriptionKey: "Old screenshot"
         ),
         DemoPhoto(
             id: 2,
             imageName: nil,
             systemIcon: "camera",
-            name: "Blurry Photo",
-            description: "Out of focus"
+            nameKey: "Blurry Photo",
+            descriptionKey: "Out of focus"
         ),
         DemoPhoto(
             id: 3,
             imageName: nil,
             systemIcon: "photo.stack",
-            name: "Duplicate",
-            description: "Already have this"
+            nameKey: "Duplicate",
+            descriptionKey: "Already have this"
         )
     ]
     
@@ -43,7 +43,7 @@ struct InteractiveSwipeDemoView: View {
                 // Title
                 Text("Try Swiping")
                     .font(.system(size: 32, weight: .bold))
-                    .foregroundColor(.black)
+                    .foregroundColor(.primary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
                     .padding(.bottom, 8)
@@ -119,7 +119,7 @@ struct InteractiveSwipeDemoView: View {
                 
                 Text("Great Job!")
                     .font(.system(size: 32, weight: .bold))
-                    .foregroundColor(.black)
+                    .foregroundColor(.primary)
                     .padding(.bottom, 8)
                 
                 Text("You've got the hang of it")
@@ -177,8 +177,8 @@ struct DemoPhoto {
     let id: Int
     let imageName: String? // Name of image file in bundle (e.g., "demo_photo_1")
     let systemIcon: String // Fallback SF Symbol icon
-    let name: String
-    let description: String
+    let nameKey: LocalizedStringKey
+    let descriptionKey: LocalizedStringKey
 }
 
 // MARK: - Swipeable Demo Card
@@ -225,11 +225,11 @@ struct SwipeableDemoCard: View {
             
             // Photo info
             VStack(spacing: 8) {
-                Text(photo.name)
+                Text(photo.nameKey)
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.black)
+                    .foregroundColor(.primary)
                 
-                Text(photo.description)
+                Text(photo.descriptionKey)
                     .font(.system(size: 15, weight: .regular))
                     .foregroundColor(.gray)
             }

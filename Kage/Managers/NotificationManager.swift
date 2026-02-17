@@ -1,6 +1,6 @@
 //
 //  NotificationManager.swift
-//  CleanSwipe
+//  Kage
 //
 //  Created by Yalun Zhang on 27/06/2025.
 //
@@ -8,17 +8,129 @@
 import Foundation
 import UserNotifications
 import UIKit
+import SwiftUI
 
 class NotificationManager: ObservableObject {
     static let shared = NotificationManager()
     
+    // MARK: - Configuration
+    
+    /// Default notification time: 9 AM (research shows 9-10 AM is optimal for engagement)
+    private let defaultNotificationHour = 9
+    
+    /// Minimum hours between notifications to prevent alert fatigue
+    private let minimumNotificationGapHours: Double = 20
+    
+    /// Maximum notifications per day
+    private let maxNotificationsPerDay = 1
+    
+    // MARK: - UserDefaults Keys
+    
     private let dailyReminderIdentifier = "dailyReminder"
-    private let reminderTime = 11 // 11 AM - Change this to test (e.g., 14 for 2 PM)
     private let cachedPhotoCountKey = "cachedPhotoCount"
+    private let lastNotificationSentKey = "lastNotificationSentTime"
+    private let lastAppOpenKey = "lastAppOpenTime"
+    private let notificationsSentTodayKey = "notificationsSentToday"
+    private let lastNotificationDateKey = "lastNotificationDate"
     
     private init() {}
     
-    // MARK: - Daily Reminder Setup
+    // MARK: - Smart Throttling
+    
+    /// Check if we can send a notification based on smart limits
+    private func canSendNotification() -> Bool {
+        let now = Date()
+        
+        // Check if we've exceeded daily limit
+        if getNotificationsSentToday() >= maxNotificationsPerDay {
+            return false
+        }
+        
+        // Check minimum gap since last notification
+        if let lastSent = UserDefaults.standard.object(forKey: lastNotificationSentKey) as? Date {
+            let hoursSinceLastNotification = now.timeIntervalSince(lastSent) / 3600
+            if hoursSinceLastNotification < minimumNotificationGapHours {
+                return false
+            }
+        }
+        
+        return true
+    }
+    
+    /// Record that a notification was sent
+    private func recordNotificationSent() {
+        let now = Date()
+        UserDefaults.standard.set(now, forKey: lastNotificationSentKey)
+        
+        // Track daily count
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let lastDate = UserDefaults.standard.object(forKey: lastNotificationDateKey) as? Date
+        
+        if let lastDate = lastDate, calendar.isDate(lastDate, inSameDayAs: today) {
+            // Same day - increment count
+            let count = UserDefaults.standard.integer(forKey: notificationsSentTodayKey)
+            UserDefaults.standard.set(count + 1, forKey: notificationsSentTodayKey)
+        } else {
+            // New day - reset count
+            UserDefaults.standard.set(1, forKey: notificationsSentTodayKey)
+            UserDefaults.standard.set(today, forKey: lastNotificationDateKey)
+        }
+    }
+    
+    /// Get number of notifications sent today
+    private func getNotificationsSentToday() -> Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let lastDate = UserDefaults.standard.object(forKey: lastNotificationDateKey) as? Date
+        
+        if let lastDate = lastDate, calendar.isDate(lastDate, inSameDayAs: today) {
+            return UserDefaults.standard.integer(forKey: notificationsSentTodayKey)
+        }
+        return 0
+    }
+    
+    /// Record that the app was opened (for engagement tracking)
+    func recordAppOpen() {
+        UserDefaults.standard.set(Date(), forKey: lastAppOpenKey)
+    }
+    
+    /// Get days since last app open
+    private func daysSinceLastAppOpen() -> Int {
+        guard let lastOpen = UserDefaults.standard.object(forKey: lastAppOpenKey) as? Date else {
+            return 999 // Never opened
+        }
+        let days = Calendar.current.dateComponents([.day], from: lastOpen, to: Date()).day ?? 0
+        return max(0, days)
+    }
+    
+    // MARK: - User Engagement State
+    
+    private enum UserEngagementState {
+        case active          // Used app today
+        case recentlyActive  // Used app 1-3 days ago
+        case inactive        // Used app 4-7 days ago
+        case dormant         // Used app 7+ days ago
+        case newUser         // Never used or very new
+    }
+    
+    private func getUserEngagementState() -> UserEngagementState {
+        let daysSinceOpen = daysSinceLastAppOpen()
+        
+        if daysSinceOpen == 0 {
+            return .active
+        } else if daysSinceOpen <= 3 {
+            return .recentlyActive
+        } else if daysSinceOpen <= 7 {
+            return .inactive
+        } else if daysSinceOpen >= 999 {
+            return .newUser
+        } else {
+            return .dormant
+        }
+    }
+    
+    // MARK: - Daily Reminder Setup (Smart)
     
     func scheduleDailyReminder() {
         // Check if daily reminder is already scheduled to prevent duplicates
@@ -26,51 +138,38 @@ class NotificationManager: ObservableObject {
             let existingDailyReminder = requests.first { $0.identifier == self.dailyReminderIdentifier }
             
             if existingDailyReminder != nil {
-                #if DEBUG
-                #endif
                 return
             }
             
             // Remove any existing daily reminders (safety check)
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [self.dailyReminderIdentifier])
             
-            // Create notification content
+            // Create notification content with smart message selection
             let content = UNMutableNotificationContent()
-            content.title = self.getRandomTitle()
-            content.body = self.getRandomBody()
+            content.title = self.getSmartTitle()
+            content.body = self.getSmartBody()
             content.sound = .default
             content.badge = 1
-            
-            // Add custom actions for better engagement
             content.categoryIdentifier = "DAILY_REMINDER"
             
-            // Create trigger for 11 AM daily
+            // Create trigger for optimal time (9 AM based on research)
             var dateComponents = DateComponents()
-            dateComponents.hour = self.reminderTime
+            dateComponents.hour = self.defaultNotificationHour
             dateComponents.minute = 0
             
             let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
             
-            // Create request
             let request = UNNotificationRequest(
                 identifier: self.dailyReminderIdentifier,
                 content: content,
                 trigger: trigger
             )
             
-            // Schedule the notification
             UNUserNotificationCenter.current().add(request) { error in
-                if let error = error {
-                    #if DEBUG
-                    #endif
-                } else {
-                    #if DEBUG
-                    #endif
+                if error == nil {
+                    self.setupNotificationCategories()
                 }
             }
-            
-            // Set up notification categories for actions
-            self.setupNotificationCategories()
         }
     }
     
@@ -78,37 +177,49 @@ class NotificationManager: ObservableObject {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [dailyReminderIdentifier])
     }
     
-    // MARK: - Testing Functions
+    // MARK: - Smart Message Selection
     
-    func testNotification() {
-        let content = UNMutableNotificationContent()
-        content.title = getRandomTitle()
-        content.body = getRandomBody()
-        content.sound = .default
-        content.badge = 1
-        content.categoryIdentifier = "DAILY_REMINDER"
+    private func getSmartTitle() -> String {
+        let state = getUserEngagementState()
         
-        // Trigger immediately for testing
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 5, repeats: false)
-        
-        let request = UNNotificationRequest(
-            identifier: "testNotification",
-            content: content,
-            trigger: trigger
-        )
-        
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-            #if DEBUG
-            #endif
-            } else {
-                #if DEBUG
-                #endif
-            }
+        switch state {
+        case .active:
+            return ["📸 Keep the momentum!", "🔥 You're on fire!", "✨ Great progress!"].randomElement()!
+        case .recentlyActive:
+            return ["📱 Time for Kage!", "🧹 Quick cleanup?", "📸 Miss your photos?"].randomElement()!
+        case .inactive:
+            return ["📱 We miss you!", "🌟 Your photos await!", "💎 Come back to Kage!"].randomElement()!
+        case .dormant:
+            return ["📸 Rediscover your memories", "🎯 Start fresh with Kage", "✨ Your photos need you"].randomElement()!
+        case .newUser:
+            return ["🌟 Welcome to Kage!", "📱 Start your journey!", "✨ Ready to organize?"].randomElement()!
         }
     }
     
-    // MARK: - Creative Notification Messages
+    private func getSmartBody() -> String {
+        let state = getUserEngagementState()
+        
+        switch state {
+        case .active:
+            return "You're doing amazing! Keep building that streak 🔥"
+        case .recentlyActive:
+            var messages = [
+                "A quick swipe session can free up more space! 📱",
+                "Your photo library is waiting for some love 💫",
+                "Just a few swipes to keep your streak alive! 🎯"
+            ]
+            if let onThisDayBody = getOnThisDayBodyMessage() {
+                messages.append(onThisDayBody)
+            }
+            return messages.randomElement()!
+        case .inactive:
+            return "Your photos miss you! Come back and continue organizing 💝"
+        case .dormant:
+            return "It's been a while! Rediscover memories and free up space 🚀"
+        case .newUser:
+            return "Start your photo organization journey today! Every swipe helps 📱✨"
+        }
+    }
     
     private func getRandomTitle() -> String {
         let titles = [
@@ -161,6 +272,28 @@ class NotificationManager: ObservableObject {
         return templates.randomElement()
     }
     
+    // MARK: - Testing Functions
+    
+    func testNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = getSmartTitle()
+        content.body = getSmartBody()
+        content.sound = .default
+        content.badge = 1
+        content.categoryIdentifier = "DAILY_REMINDER"
+        
+        // Trigger immediately for testing
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 5, repeats: false)
+        
+        let request = UNNotificationRequest(
+            identifier: "testNotification",
+            content: content,
+            trigger: trigger
+        )
+        
+        UNUserNotificationCenter.current().add(request)
+    }
+    
     // MARK: - Notification Categories & Actions
     
     private func setupNotificationCategories() {
@@ -193,8 +326,16 @@ class NotificationManager: ObservableObject {
             options: []
         )
         
-        // Register category
-        UNUserNotificationCenter.current().setNotificationCategories([category])
+        // Streak risk category
+        let streakCategory = UNNotificationCategory(
+            identifier: "STREAK_RISK",
+            actions: [startSwipingAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        
+        // Register categories
+        UNUserNotificationCenter.current().setNotificationCategories([category, streakCategory])
     }
     
     // MARK: - Permission Management
@@ -206,7 +347,6 @@ class NotificationManager: ObservableObject {
             )
             
             if granted {
-                // Schedule daily reminder if permission granted
                 await MainActor.run {
                     scheduleDailyReminder()
                     scheduleSmartNotifications()
@@ -215,8 +355,6 @@ class NotificationManager: ObservableObject {
             
             return granted
         } catch {
-            #if DEBUG
-            #endif
             return false
         }
     }
@@ -226,17 +364,18 @@ class NotificationManager: ObservableObject {
         return settings.authorizationStatus
     }
     
-    // MARK: - Storage-based Reminders
+    // MARK: - Storage-based Reminders (Throttled)
     
     func scheduleStorageReminder() {
-        // This could be used for low storage warnings
+        // Respect smart limits
+        guard canSendNotification() else { return }
+        
         let content = UNMutableNotificationContent()
         content.title = "💾 Storage Alert!"
         content.body = "Your device is running low on storage. Kage can help you free up space quickly! 📱✨"
         content.sound = .default
         content.badge = 1
         
-        // Trigger immediately
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         
         let request = UNNotificationRequest(
@@ -245,23 +384,28 @@ class NotificationManager: ObservableObject {
             trigger: trigger
         )
         
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if error == nil {
+                self.recordNotificationSent()
+            }
+        }
     }
     
-    // MARK: - Achievement Reminders
+    // MARK: - Achievement Reminders (Throttled)
     
     func scheduleAchievementReminder(photosDeleted: Int, storageSaved: String, totalPhotosDeleted: Int) {
         // Check if this is a milestone achievement
         guard let achievement = getAchievementForCount(totalPhotosDeleted) else {
-            return // No achievement for this count
+            return
         }
         
         // Check if this achievement notification has already been shown
         let achievementKey = "achievement_shown_\(totalPhotosDeleted)"
         if UserDefaults.standard.bool(forKey: achievementKey) {
-            return // Achievement already shown for this milestone
+            return
         }
         
+        // Achievement notifications bypass throttling (they're rare and valuable)
         let content = UNMutableNotificationContent()
         content.title = achievement.title
         content.body = achievement.message
@@ -277,13 +421,7 @@ class NotificationManager: ObservableObject {
         )
         
         UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                #if DEBUG
-                #endif
-            } else {
-                #if DEBUG
-                #endif
-                // Mark this achievement as shown
+            if error == nil {
                 UserDefaults.standard.set(true, forKey: achievementKey)
             }
         }
@@ -333,7 +471,7 @@ class NotificationManager: ObservableObject {
             ),
             Achievement(
                 count: 5000,
-                title: "👑 CleanSwipe Legend!",
+                title: "👑 Kage Legend!",
                 message: "5000 photos deleted! You're a true digital decluttering legend! 🏅"
             ),
             Achievement(
@@ -352,12 +490,13 @@ class NotificationManager: ObservableObject {
         let message: String
     }
     
-    // MARK: - Streak Reminders
+    // MARK: - Streak Reminders (Smart Throttled)
     
     func scheduleStreakReminder(daysStreak: Int) {
+        // This is triggered in-app, doesn't need throttling
         let content = UNMutableNotificationContent()
         content.title = "🔥 Streak Alert!"
-        content.body = "You're on a \(daysStreak)-day CleanSwipe streak! Don't break the chain! 🔗✨"
+        content.body = "You're on a \(daysStreak)-day Kage streak! Don't break the chain! 🔗✨"
         content.sound = .default
         content.badge = 1
         
@@ -373,9 +512,13 @@ class NotificationManager: ObservableObject {
     }
     
     func scheduleStreakAtRiskNotification(currentStreak: Int) {
+        // Only send if streak is meaningful (>=3 days) and respects smart limits
+        guard currentStreak >= 3 else { return }
+        guard canSendNotification() else { return }
+        
         let content = UNMutableNotificationContent()
         content.title = "⚠️ Streak at Risk!"
-        content.body = "Your \(currentStreak)-day streak is about to break! Quick, open CleanSwipe to save it! 🚨"
+        content.body = "Your \(currentStreak)-day streak is about to break! Quick, open Kage to save it! 🚨"
         content.sound = .default
         content.badge = 1
         content.categoryIdentifier = "STREAK_RISK"
@@ -393,42 +536,15 @@ class NotificationManager: ObservableObject {
             trigger: trigger
         )
         
-        UNUserNotificationCenter.current().add(request)
-    }
-    
-    func scheduleMotivationalReminder() {
-        let motivationalMessages = [
-            "🌟 Ready to continue your streak? You've got this!",
-            "📱 Your photos are waiting! Keep that streak alive!",
-            "💪 Every swipe counts! Your streak is on fire!",
-            "🎯 Stay consistent! Your future self will thank you!",
-            "✨ Don't let your streak slip away! You're doing amazing!"
-        ]
-        
-        let content = UNMutableNotificationContent()
-        content.title = "🔥 Keep Your Streak Alive!"
-        content.body = motivationalMessages.randomElement() ?? "Keep your streak going!"
-        content.sound = .default
-        content.badge = 1
-        content.categoryIdentifier = "MOTIVATIONAL"
-        
-        // Schedule for 6 PM
-        var dateComponents = DateComponents()
-        dateComponents.hour = 18
-        dateComponents.minute = 0
-        
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-        
-        let request = UNNotificationRequest(
-            identifier: "motivationalReminder",
-            content: content,
-            trigger: trigger
-        )
-        
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if error == nil {
+                self.recordNotificationSent()
+            }
+        }
     }
     
     func scheduleStreakMilestoneNotification(milestone: StreakMilestone) {
+        // Milestone notifications bypass throttling (rare and valuable)
         let content = UNMutableNotificationContent()
         content.title = "🎉 Milestone Unlocked!"
         content.body = "\(milestone.reward) \(milestone.title): \(milestone.description) \(milestone.reward)"
@@ -465,78 +581,6 @@ class NotificationManager: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
     
-    func scheduleOnThisDayHintNotification(photoCount: Int) {
-        let content = UNMutableNotificationContent()
-        content.title = "📸 Photos Awaiting Review!"
-        content.body = "You have \(photoCount) photos waiting to be reviewed! Perfect for your streak! 📸"
-        content.sound = .default
-        content.badge = 1
-        content.categoryIdentifier = "ON_THIS_DAY_HINT"
-        
-        // Schedule for 10 AM
-        var dateComponents = DateComponents()
-        dateComponents.hour = 10
-        dateComponents.minute = 0
-        
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-        
-        let request = UNNotificationRequest(
-            identifier: "onThisDayHint",
-            content: content,
-            trigger: trigger
-        )
-        
-        UNUserNotificationCenter.current().add(request)
-    }
-    
-    func scheduleStorageHintNotification(storagePotential: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "💾 Storage Opportunity!"
-        content.body = "You could free up \(storagePotential) of storage by reviewing photos! Keep your streak going! 🚀"
-        content.sound = .default
-        content.badge = 1
-        content.categoryIdentifier = "STORAGE_HINT"
-        
-        // Schedule for 2 PM
-        var dateComponents = DateComponents()
-        dateComponents.hour = 14
-        dateComponents.minute = 0
-        
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-        
-        let request = UNNotificationRequest(
-            identifier: "storageHint",
-            content: content,
-            trigger: trigger
-        )
-        
-        UNUserNotificationCenter.current().add(request)
-    }
-    
-    func scheduleSwipeLimitHintNotification(swipesRemaining: Int) {
-        let content = UNMutableNotificationContent()
-        content.title = "👆 Swipes Available!"
-        content.body = "You have \(swipesRemaining) free swipes left today! Make them count for your streak! ⭐"
-        content.sound = .default
-        content.badge = 1
-        content.categoryIdentifier = "SWIPE_HINT"
-        
-        // Schedule for 4 PM
-        var dateComponents = DateComponents()
-        dateComponents.hour = 16
-        dateComponents.minute = 0
-        
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-        
-        let request = UNNotificationRequest(
-            identifier: "swipeHint",
-            content: content,
-            trigger: trigger
-        )
-        
-        UNUserNotificationCenter.current().add(request)
-    }
-    
     // MARK: - Smart Notification Scheduling
     
     @MainActor
@@ -544,14 +588,17 @@ class NotificationManager: ObservableObject {
         // Cancel any existing smart notifications to prevent duplicates
         cancelSmartNotifications()
         
-        // Schedule notifications based on streak status and user behavior
+        // Only schedule if we respect throttling limits
+        // Note: These are scheduled for future times, so we check pending state
+        
         let streakStatus = StreakManager.shared.getStreakStatus()
         
         switch streakStatus {
         case .neverStarted:
             scheduleNewUserNotifications()
         case .activeToday:
-            scheduleActiveUserNotifications()
+            // Don't schedule additional notifications for active users - they're engaged!
+            break
         case .streakAtRisk:
             scheduleAtRiskNotifications()
         case .streakBroken:
@@ -562,63 +609,62 @@ class NotificationManager: ObservableObject {
     private func cancelSmartNotifications() {
         let identifiers = [
             "smartOnThisDay", "smartStorage", "smartSwipe",
-            "newUserHint", "activeUserHint", "atRiskHint", "recoveryHint"
+            "newUserHint", "activeUserHint", "atRiskHint", "recoveryHint",
+            "onThisDayHint", "storageHint", "swipeHint", "motivationalReminder"
+        ]
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+    
+    /// Cancel all non-essential pending notifications (for cleanup)
+    func cancelAllOptionalNotifications() {
+        let identifiers = [
+            "onThisDayHint", "storageHint", "swipeHint", "motivationalReminder",
+            "newUserHint", "activeUserHint", "atRiskHint", "recoveryHint",
+            "smartOnThisDay", "smartStorage", "smartSwipe"
         ]
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
     }
     
     private func scheduleNewUserNotifications() {
-        // Schedule helpful hints for new users
+        // Schedule a single helpful hint for new users at optimal time
         scheduleNotification(
             identifier: "newUserHint",
-            title: "🌟 Welcome to CleanSwipe!",
+            title: "🌟 Welcome to Kage!",
             body: "Start your photo organization journey today! Every swipe helps declutter your library! 📱✨",
-            hour: 10,
-            categoryIdentifier: "NEW_USER"
+            hour: defaultNotificationHour,
+            categoryIdentifier: "NEW_USER",
+            repeats: false  // One-time for new users
         )
-    }
-    
-    @MainActor
-    private func scheduleActiveUserNotifications() {
-        // Schedule engagement notifications for active users
-        if StreakManager.shared.totalPhotosToReview > 0 {
-            scheduleOnThisDayHintNotification(photoCount: StreakManager.shared.totalPhotosToReview)
-        }
-        
-        if !StreakManager.shared.totalStoragePotential.isEmpty && StreakManager.shared.totalStoragePotential != "0 MB" {
-            scheduleStorageHintNotification(storagePotential: StreakManager.shared.totalStoragePotential)
-        }
-        
-        let remainingSwipes = calculateRemainingSwipes()
-        if remainingSwipes > 0 {
-            scheduleSwipeLimitHintNotification(swipesRemaining: remainingSwipes)
-        }
     }
     
     @MainActor
     private func scheduleAtRiskNotifications() {
-        // Schedule urgent notifications for users at risk of losing their streak
+        // Only schedule if user has a meaningful streak
+        let currentStreak = StreakManager.shared.currentStreak
+        guard currentStreak >= 3 else { return }
+        
         scheduleNotification(
             identifier: "atRiskHint",
             title: "🚨 Streak Emergency!",
-            body: "Your \(StreakManager.shared.currentStreak)-day streak is about to break! Quick, open CleanSwipe now! 🔥",
-            hour: 19,
-            categoryIdentifier: "STREAK_RISK"
+            body: "Your \(currentStreak)-day streak is about to break! Quick, open Kage now! 🔥",
+            hour: 20,  // 8 PM - evening reminder
+            categoryIdentifier: "STREAK_RISK",
+            repeats: false
         )
     }
     
     private func scheduleRecoveryNotifications() {
-        // Schedule encouraging notifications for users with broken streaks
         scheduleNotification(
             identifier: "recoveryHint",
             title: "💪 Fresh Start!",
             body: "Every streak begins with a single swipe! Start building your new streak today! 🚀",
-            hour: 12,
-            categoryIdentifier: "RECOVERY"
+            hour: defaultNotificationHour,
+            categoryIdentifier: "RECOVERY",
+            repeats: false
         )
     }
     
-    private func scheduleNotification(identifier: String, title: String, body: String, hour: Int, categoryIdentifier: String) {
+    private func scheduleNotification(identifier: String, title: String, body: String, hour: Int, categoryIdentifier: String, repeats: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -630,7 +676,7 @@ class NotificationManager: ObservableObject {
         dateComponents.hour = hour
         dateComponents.minute = 0
         
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: repeats)
         
         let request = UNNotificationRequest(
             identifier: identifier,
@@ -641,14 +687,21 @@ class NotificationManager: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
     
+    // MARK: - Removed/Deprecated Functions
+    // The following functions have been removed to prevent notification spam:
+    // - scheduleOnThisDayHintNotification (merged into smart daily)
+    // - scheduleStorageHintNotification (too aggressive)
+    // - scheduleSwipeLimitHintNotification (too aggressive)
+    // - scheduleMotivationalReminder (merged into streak-at-risk)
+    // - scheduleActiveUserNotifications (active users don't need reminders)
+    
     @MainActor
     private func calculateRemainingSwipes() -> Int {
         let purchaseManager = PurchaseManager.shared
         
-        // Check if user is premium
         switch purchaseManager.subscriptionStatus {
         case .trial, .active:
-            return 999 // Unlimited for premium users
+            return 999
         case .notSubscribed, .expired, .cancelled:
             let maxSwipes = purchaseManager.freeDailySwipes
             let usedSwipes = purchaseManager.dailySwipeCount
@@ -657,4 +710,29 @@ class NotificationManager: ObservableObject {
             return max(0, maxSwipes - usedSwipes + rewardedSwipes)
         }
     }
-} 
+    
+    // MARK: - Debug Helpers
+    
+    #if DEBUG
+    func debugPrintNotificationState() {
+        print("=== Notification Manager State ===")
+        print("Notifications sent today: \(getNotificationsSentToday())")
+        print("Can send notification: \(canSendNotification())")
+        print("Days since last app open: \(daysSinceLastAppOpen())")
+        print("User engagement state: \(getUserEngagementState())")
+        if let lastSent = UserDefaults.standard.object(forKey: lastNotificationSentKey) as? Date {
+            let hoursSince = Date().timeIntervalSince(lastSent) / 3600
+            print("Hours since last notification: \(String(format: "%.1f", hoursSince))")
+        }
+        print("================================")
+    }
+    
+    func resetNotificationThrottling() {
+        UserDefaults.standard.removeObject(forKey: lastNotificationSentKey)
+        UserDefaults.standard.removeObject(forKey: notificationsSentTodayKey)
+        UserDefaults.standard.removeObject(forKey: lastNotificationDateKey)
+        print("Notification throttling reset")
+    }
+    #endif
+}
+

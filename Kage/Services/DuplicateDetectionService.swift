@@ -8,6 +8,7 @@
 import Foundation
 import Photos
 import Vision
+import UIKit
 import os.log
 
 actor DuplicateDetectionService {
@@ -45,11 +46,13 @@ actor DuplicateDetectionService {
     private var cachedClusters: [DuplicateCluster] = []
     private var lastScanDate: Date?
     private var isScanning = false
-    
-    private let baseScanLimit = 800
-    private let maxScanLimit = 6400
-    private var currentScanLimit = 800
-    private let scanExpansionFactor = 2
+
+    // Sequential scanning state - track total photos scanned so far
+    private(set) var totalPhotosScanned: Int = 0
+
+    // Smaller batch size for faster initial results
+    // With parallel processing and early termination, we can use smaller batches
+    private let batchSize = 1000  // Smaller batches for faster results
     
     private init() {}
     
@@ -60,9 +63,11 @@ actor DuplicateDetectionService {
                 forceRefresh: Bool = false,
                 allowDeepScan: Bool = false,
                 excludedAssetIDs: Set<String> = [],
+                findMoreDuplicates: Bool = false,
                 progressHandler: (@Sendable (Double) async -> Void)? = nil) async throws -> ([DuplicateCluster], Bool) {
-        if cachedClusters.isEmpty || forceRefresh || shouldRefreshClusters() {
-            try await refreshClusters(forceDeepScan: allowDeepScan, progressHandler: progressHandler)
+        let shouldRefresh = cachedClusters.isEmpty || forceRefresh || shouldRefreshClusters() || findMoreDuplicates
+        if shouldRefresh {
+            try await refreshClusters(isFreshScan: forceRefresh, forceDeepScan: allowDeepScan, findMoreDuplicates: findMoreDuplicates, progressHandler: progressHandler)
         } else {
             if let progressHandler {
                 await progressHandler(1.0)
@@ -92,7 +97,12 @@ actor DuplicateDetectionService {
         cachedClusters = []
         lastScanDate = nil
         memoryCache.removeAll()
-        currentScanLimit = baseScanLimit
+        // Reset sequential scanning state
+        totalPhotosScanned = 0
+    }
+
+    func hasCachedResults() -> Bool {
+        return !cachedClusters.isEmpty
     }
     
     // MARK: - Cluster Refresh
@@ -102,20 +112,38 @@ actor DuplicateDetectionService {
         let scannedAssetCount: Int
     }
     
-    private func refreshClusters(forceDeepScan: Bool,
-                                 exactThreshold: Float = 0.075,
-                                 similarThreshold: Float = 0.13,
+    private func refreshClusters(isFreshScan: Bool = false,
+                                 forceDeepScan: Bool,
+                                 exactThreshold: Float? = nil,  // Will be set based on iOS version
+                                 similarThreshold: Float? = nil, // Will be set based on iOS version
+                                 findMoreDuplicates: Bool = false,
                                  progressHandler: (@Sendable (Double) async -> Void)?) async throws {
+        // Set thresholds based on iOS version
+        // iOS 17+: normalized vectors, distances 0-2.0 (use lower thresholds)
+        // iOS 16: non-normalized vectors, distances 0-40.0 (use higher thresholds)
+        let (exactThresh, similarThresh): (Float, Float)
+        if #available(iOS 17.0, *) {
+            // iOS 17+: Based on research, distances are typically 0-2.0
+            // Based on actual observed distances (min=0.086, max=1.36), using lenient thresholds
+            exactThresh = exactThreshold ?? 0.5   // iOS 17: normalized, distances 0-2.0
+            similarThresh = similarThreshold ?? 0.9
+            logger.info("Using iOS 17+ thresholds: exact=\(exactThresh), similar=\(similarThresh)")
+        } else {
+            // iOS 16: distances are typically 0-40.0
+            exactThresh = exactThreshold ?? 15.0  // iOS 16: non-normalized, distances 0-40.0
+            similarThresh = similarThreshold ?? 25.0
+            logger.info("Using iOS 16 thresholds: exact=\(exactThresh), similar=\(similarThresh)")
+        }
         guard !isScanning else { return }
         isScanning = true
         defer { isScanning = false }
-        
+
         if let progressHandler {
             await progressHandler(0.0)
         }
-        
+
         try Task.checkCancellation()
-        
+
         let authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard authorizationStatus == .authorized || authorizationStatus == .limited else {
             cachedClusters = []
@@ -126,34 +154,29 @@ actor DuplicateDetectionService {
             }
             return
         }
-        
-        var attemptLimit = forceDeepScan ? max(baseScanLimit, currentScanLimit) : baseScanLimit
-        var outcome = ScanOutcome(clusters: [], scannedAssetCount: 0)
-        
-        repeat {
-            try Task.checkCancellation()
-            outcome = try await performScan(limit: attemptLimit,
-                                            exactThreshold: exactThreshold,
-                                            similarThreshold: similarThreshold,
-                                            progressHandler: progressHandler)
-            
-            let shouldExpand = forceDeepScan
-                && outcome.clusters.isEmpty
-                && outcome.scannedAssetCount >= attemptLimit
-                && attemptLimit < maxScanLimit
-            
-            if shouldExpand {
-                let nextLimit = min(maxScanLimit, attemptLimit * scanExpansionFactor)
-                logger.info("Duplicate scan produced no results. Expanding search limit from \(attemptLimit, privacy: .public) to \(nextLimit, privacy: .public).")
-                if nextLimit == attemptLimit {
-                    break
-                }
-                attemptLimit = nextLimit
-                continue
-            }
-            
-            break
-        } while true
+
+        // Sequential scanning: determine offset for this scan
+        let scanOffset: Int
+        if isFreshScan {
+            // Fresh scan - start from beginning
+            scanOffset = 0
+            totalPhotosScanned = 0
+        } else {
+            // Continue from where we left off (incremental scanning)
+            scanOffset = totalPhotosScanned
+        }
+
+        let iosVersion = ProcessInfo.processInfo.operatingSystemVersion
+        logger.info("Starting sequential scan: offset \(scanOffset), batch size \(self.batchSize), iOS \(iosVersion.majorVersion).\(iosVersion.minorVersion), thresholds: exact=\(exactThresh), similar=\(similarThresh)")
+
+        // Scan with fixed batch size for consistent performance
+        let outcome = try await performSequentialScan(offset: scanOffset,
+                                                     limit: batchSize,
+                                                     exactThreshold: exactThresh,
+                                                     similarThreshold: similarThresh,
+                                                     progressHandler: progressHandler)
+
+        logger.info("Sequential scan completed: found \(outcome.clusters.count) clusters from \(outcome.scannedAssetCount) assets (exactThreshold: \(exactThresh), similarThreshold: \(similarThresh))")
         cachedClusters = outcome.clusters.sorted { lhs, rhs in
             let lhsDate = lhs.representativeCreationDate ?? Date.distantPast
             let rhsDate = rhs.representativeCreationDate ?? Date.distantPast
@@ -162,32 +185,90 @@ actor DuplicateDetectionService {
         if let progressHandler {
             await progressHandler(1.0)
         }
-        if forceDeepScan {
-            currentScanLimit = max(baseScanLimit, min(attemptLimit, maxScanLimit))
-        }
+
+        // Update total photos scanned (approximate, since we're doing random batches)
+        totalPhotosScanned += outcome.scannedAssetCount
+
         lastScanDate = Date()
     }
     
-    private func performScan(limit: Int,
-                             exactThreshold: Float,
-                             similarThreshold: Float,
-                             progressHandler: (@Sendable (Double) async -> Void)?) async throws -> ScanOutcome {
-        let assets = await fetchRecentAssets(limit: limit)
+    private func performSequentialScan(offset: Int,
+                                      limit: Int,
+                                      exactThreshold: Float,
+                                      similarThreshold: Float,
+                                      progressHandler: (@Sendable (Double) async -> Void)?) async throws -> ScanOutcome {
+        let assets = await fetchAssets(offset: offset, limit: limit)
         guard !assets.isEmpty else {
             return ScanOutcome(clusters: [], scannedAssetCount: 0)
         }
         
+        // Parallel descriptor generation for much faster processing
         var descriptors: [String: FeatureDescriptor] = [:]
         descriptors.reserveCapacity(assets.count)
         
-        for (index, asset) in assets.enumerated() {
-            try Task.checkCancellation()
-            if let descriptor = try await descriptor(for: asset) {
-                descriptors[asset.localIdentifier] = descriptor
+        // Process descriptors in parallel for much faster processing
+        // Use controlled concurrency to avoid overwhelming the system
+        // With smaller images (512px max dimension), we can process more in parallel
+        let maxConcurrency = 8  // Process 8 images in parallel
+        var processedCount = 0
+        
+        try await withThrowingTaskGroup(of: (String, FeatureDescriptor?).self) { group in
+            var assetIndex = 0
+            
+            // Start initial batch of tasks
+            for _ in 0..<min(maxConcurrency, assets.count) {
+                guard assetIndex < assets.count else { break }
+                let asset = assets[assetIndex]
+                assetIndex += 1
+                
+                group.addTask { [weak self] in
+                    guard let self else { return (asset.localIdentifier, nil) }
+                    do {
+                        try Task.checkCancellation()
+                        if let descriptor = try await self.descriptor(for: asset) {
+                            return (asset.localIdentifier, descriptor)
+                        }
+                    } catch {
+                        // Log error but continue
+                    }
+                    return (asset.localIdentifier, nil)
+                }
             }
-            if let progressHandler {
-                let progress = Double(index + 1) / Double(assets.count)
-                await progressHandler(min(progress * 0.7, 0.7))
+            
+            // Process results and add new tasks as they complete
+            while let result = try await group.next() {
+                try Task.checkCancellation()
+                
+                let (assetID, descriptor) = result
+                if let descriptor = descriptor {
+                    descriptors[assetID] = descriptor
+                }
+                processedCount += 1
+                
+                // Add next task if there are more assets
+                if assetIndex < assets.count {
+                    let asset = assets[assetIndex]
+                    assetIndex += 1
+                    
+                    group.addTask { [weak self] in
+                        guard let self else { return (asset.localIdentifier, nil) }
+                        do {
+                            try Task.checkCancellation()
+                            if let descriptor = try await self.descriptor(for: asset) {
+                                return (asset.localIdentifier, descriptor)
+                            }
+                        } catch {
+                            // Log error but continue
+                        }
+                        return (asset.localIdentifier, nil)
+                    }
+                }
+                
+                // Update progress
+                if let progressHandler {
+                    let progress = Double(processedCount) / Double(assets.count)
+                    await progressHandler(min(progress * 0.7, 0.7))
+                }
             }
         }
         
@@ -196,7 +277,8 @@ actor DuplicateDetectionService {
                                                exactThreshold: exactThreshold,
                                                similarThreshold: similarThreshold,
                                                progressHandler: progressHandler,
-                                               processedDescriptorCount: assets.count)
+                                               processedDescriptorCount: assets.count,
+                                               maxClusters: 8)  // Early termination when we find 8 clusters
         
         return ScanOutcome(clusters: clusters, scannedAssetCount: assets.count)
     }
@@ -207,23 +289,43 @@ actor DuplicateDetectionService {
     }
     
     // MARK: - Asset Fetching
-    
-    private func fetchRecentAssets(limit: Int) async -> [PHAsset] {
+
+    private func getTotalPhotoCount() async -> Int {
+        await MainActor.run {
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(format: "mediaType = %d", PHAssetMediaType.image.rawValue)
+            options.includeHiddenAssets = false
+            let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
+            return fetchResult.count
+        }
+    }
+
+    private func fetchAssets(offset: Int, limit: Int) async -> [PHAsset] {
         await MainActor.run {
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            options.predicate = NSPredicate(format: "mediaType = %d", PHAssetMediaType.image.rawValue)
             options.includeHiddenAssets = false
-            options.fetchLimit = limit
-            
+            // Fetch enough assets to skip offset and get limit more
+            options.fetchLimit = offset + limit
+
+            // Only filter for images
+            options.predicate = NSPredicate(format: "mediaType = %d", PHAssetMediaType.image.rawValue)
+
             var assets: [PHAsset] = []
             let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
+
+            // Skip the first 'offset' assets and take the next 'limit' assets
+            var currentIndex = 0
             fetchResult.enumerateObjects { asset, _, stop in
-                assets.append(asset)
-                if assets.count >= limit {
-                    stop.pointee = true
+                if currentIndex >= offset {
+                    assets.append(asset)
+                    if assets.count >= limit {
+                        stop.pointee = true
+                    }
                 }
+                currentIndex += 1
             }
+
             return assets
         }
     }
@@ -236,11 +338,21 @@ actor DuplicateDetectionService {
                                similarThreshold: Float,
                                progressHandler: (@Sendable (Double) async -> Void)?,
                                processedDescriptorCount: Int,
-                               maxGroupSize: Int = 8) async throws -> [DuplicateCluster] {
+                               maxGroupSize: Int = 8,
+                               maxClusters: Int = Int.max) async throws -> [DuplicateCluster] {
         var clusters: [DuplicateCluster] = []
         var consumedIdentifiers = Set<String>()
+        var totalComparisons = 0
+        var matchesFound = 0
+        var minDistance: Float = Float.greatestFiniteMagnitude
+        var maxDistance: Float = 0
         
         for (index, asset) in assets.enumerated() {
+            // Early termination: if we've found enough clusters, stop processing
+            if clusters.count >= maxClusters {
+                break
+            }
+            
             let assetID = asset.localIdentifier
             guard !consumedIdentifiers.contains(assetID),
                   let baseDescriptor = descriptors[assetID] else {
@@ -259,14 +371,26 @@ actor DuplicateDetectionService {
                 }
                 
                 let distance = try computeDistance(between: baseDescriptor, and: candidateDescriptor)
+                totalComparisons += 1
+                minDistance = min(minDistance, distance)
+                maxDistance = max(maxDistance, distance)
+                
                 if distance <= similarThreshold {
+                    matchesFound += 1
                     members.append((candidate, distance))
+                    
+                    // Early termination: if we found an exact match and have enough members, stop searching
+                    if distance <= exactThreshold && members.count >= 3 {
+                        // Found exact match with a few others, likely enough - stop searching
+                        break
+                    }
+                    
                     if members.count >= (maxGroupSize - 1) {
                         break
                     }
                 }
             }
-            
+
             guard !members.isEmpty else {
                 continue
             }
@@ -300,6 +424,12 @@ actor DuplicateDetectionService {
             )
             clusters.append(cluster)
             
+            // Early termination: if we've found enough clusters, stop processing
+            if clusters.count >= maxClusters {
+                logger.info("Early termination: found \(clusters.count) clusters, stopping search")
+                break
+            }
+            
             if let progressHandler {
                 let base = 0.7
                 let remaining = 0.3
@@ -307,6 +437,9 @@ actor DuplicateDetectionService {
                 await progressHandler(min(max(progress, base), 1.0))
             }
         }
+        
+        // Log stats to help debug duplicate detection
+        logger.info("buildClusters: \(clusters.count) clusters from \(totalComparisons) comparisons, \(matchesFound) matches, distances: min=\(minDistance), max=\(maxDistance), thresholds: exact=\(exactThreshold), similar=\(similarThreshold)")
         
         return clusters
     }
@@ -330,25 +463,51 @@ actor DuplicateDetectionService {
     }
     
     private func requestImageData(for asset: PHAsset) async throws -> (data: Data, orientation: CGImagePropertyOrientation)? {
-        try await withCheckedThrowingContinuation { continuation in
+        // Use optimal image size for feature extraction - 512px on longest side balances performance and accuracy
+        // This is the recommended size for Vision framework feature extraction
+        let maxDimension: CGFloat = 512
+        let targetSize: CGSize
+        if asset.pixelWidth > asset.pixelHeight {
+            let aspectRatio = CGFloat(asset.pixelHeight) / CGFloat(asset.pixelWidth)
+            targetSize = CGSize(width: maxDimension, height: maxDimension * aspectRatio)
+        } else {
+            let aspectRatio = CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight)
+            targetSize = CGSize(width: maxDimension * aspectRatio, height: maxDimension)
+        }
+        
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(data: Data, orientation: CGImagePropertyOrientation)?, Error>) in
             let options = PHImageRequestOptions()
             options.version = .current
-            options.deliveryMode = .highQualityFormat
+            options.deliveryMode = .fastFormat  // Fastest mode - we don't need high quality
+            options.resizeMode = .fast
             options.isSynchronous = false
             options.isNetworkAccessAllowed = true
             
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, orientation, info in
+            PHImageManager.default().requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFit, options: options) { image, info in
                 if let error = info?[PHImageErrorKey] as? Error {
                     continuation.resume(throwing: error)
                     return
                 }
                 
-                guard let data else {
+                guard let image = image else {
                     continuation.resume(returning: nil)
                     return
                 }
                 
-                continuation.resume(returning: (data, orientation))
+                // Convert to JPEG without alpha to avoid AlphaLast warning and reduce memory
+                // Create a new image context without alpha channel
+                let format = UIGraphicsImageRendererFormat()
+                format.opaque = true  // No alpha channel for JPEG
+                format.scale = image.scale
+                
+                let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+                let jpegImage = renderer.jpegData(withCompressionQuality: 0.5) { context in
+                    image.draw(in: CGRect(origin: .zero, size: image.size))
+                }
+                
+                // Image is already correctly oriented from requestImage, use .up
+                let orientation: CGImagePropertyOrientation = .up
+                continuation.resume(returning: (jpegImage, orientation))
             }
         }
     }
@@ -358,6 +517,14 @@ actor DuplicateDetectionService {
                                            orientation: CGImagePropertyOrientation) throws -> FeatureDescriptor {
         let handler = VNImageRequestHandler(data: imageData, orientation: orientation, options: [:])
         let request = VNGenerateImageFeaturePrintRequest()
+        
+        // Use revision 2 (iOS 17+) for normalized feature vectors (distances 0-2.0)
+        // This provides more consistent and meaningful distance comparisons
+        if #available(iOS 17.0, *) {
+            request.revision = VNGenerateImageFeaturePrintRequestRevision2
+        }
+        // iOS 16 and below will use revision 1 (distances 0-40.0) automatically
+        
         try handler.perform([request])
         
         guard let observation = request.results?.first as? VNFeaturePrintObservation else {

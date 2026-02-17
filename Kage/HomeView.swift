@@ -15,6 +15,7 @@ struct HomeView: View {
     @EnvironmentObject private var purchaseManager: PurchaseManager
     @EnvironmentObject private var notificationManager: NotificationManager
     @EnvironmentObject private var streakManager: StreakManager
+    @Environment(\.colorScheme) var colorScheme
     @State private var selectedFilter: PhotoFilter = .random
     @State private var selectedContentType: ContentType = .photos
     @State private var contentViewContentType: ContentType = .photos  // Separate state for ContentView
@@ -26,8 +27,6 @@ struct HomeView: View {
     @State private var showingDuplicatePaywall = false
     @State private var showingPostOnboardingOffer = false
     @State private var postOnboardingOffering: Offering?
-    @State private var showingSaleOffer = false
-    @State private var saleOffering: Offering?
     @State private var totalPhotoCount = 0
     @State private var availableYears: [Int] = []
     @State private var isRefreshing = false
@@ -63,6 +62,13 @@ struct HomeView: View {
     @State private var cachedYearAssets: [PHAsset] = []
     @State private var cachedOnThisDayAssets: [PHAsset] = []
     
+    // Smart Cleaning Modes
+    @State private var smartCleaningModes: [SmartCleaningMode] = []
+    @State private var isLoadingSmartModes = true
+    @State private var selectedSmartMode: SmartCleaningMode?
+    @State private var showingSmartModeDetail = false
+    @State private var showingSmartCleanupHub = false
+    
     init(pendingQuickAction: Binding<QuickActionType?> = .constant(nil)) {
         _pendingQuickAction = pendingQuickAction
     }
@@ -72,11 +78,15 @@ struct HomeView: View {
             ZStack {
                 // Beautiful modern blue gradient background
                 LinearGradient(
-                    gradient: Gradient(colors: [
+                    gradient: Gradient(colors: colorScheme == .dark ? [
+                        Color(red: 0.1, green: 0.1, blue: 0.2),
+                        Color(red: 0.05, green: 0.05, blue: 0.1),
+                        Color.black
+                    ] : [
                         Color(red: 0.4, green: 0.7, blue: 1.0),    // Modern bright blue at top
                         Color(red: 0.6, green: 0.85, blue: 1.0),   // Sky blue middle
-                        Color(red: 0.85, green: 0.95, blue: 1.0),  // Light blue
-                        Color.white                                 // White at bottom
+                        Color(red: 0.85, green: 0.95, blue: 1.0).opacity(0.8),  // Light blue
+                        Color(.systemBackground)                   // Adaptive background at bottom
                     ]),
                     startPoint: .top,
                     endPoint: .bottom
@@ -84,12 +94,18 @@ struct HomeView: View {
                 .ignoresSafeArea()
                 
                 ScrollView([.vertical], showsIndicators: false) {
-                    VStack(spacing: 24) {
+                    VStack(spacing: 16) {
                         Group {
                             statsSection
                                 .padding(.horizontal, 16)
                             utilitiesSection
                                 .padding(.horizontal, 16)
+                            
+                            // Smart Cleaning section moved here - above streak, below brainrot reel
+                            smartCleaningSection
+                                .padding(.top, -4) // Reduce gap to brainrot button
+                                .padding(.horizontal, 16)
+                            
                             streakSection
                                 .padding(.horizontal, 16)
                             onThisDaySection
@@ -97,13 +113,6 @@ struct HomeView: View {
                         }
                         
                         myLifeSection
-                        
-                        VStack(alignment: .leading, spacing: 24) {
-                            smartCleaningSection
-                        }
-                        .contentShape(Rectangle())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
                         
                         myCleaningStatsSection
                             .padding(.horizontal, 16)
@@ -145,6 +154,7 @@ struct HomeView: View {
             }
         }
         .kageNavigationBarStyle()
+        .navigationViewStyle(.stack)
         .onAppear {
             loadInitialData()
             
@@ -176,6 +186,10 @@ struct HomeView: View {
                 onPhotoAccessLost: nil,
                 onContentTypeChange: { newContentType in
                     selectedContentType = newContentType
+                },
+                onDismiss: {
+                    // Direct callback - GUARANTEED to dismiss the view
+                    showingContentView = false
                 }
             )
             .id("\(contentViewContentType.rawValue)-\(selectedFilter)")  // Force recreation when content type changes
@@ -206,7 +220,7 @@ struct HomeView: View {
             SettingsView()
         }
         .sheet(isPresented: $showingSmartAICleanup) {
-            SmartAICleanupView(onDeletion: { _ in
+            SmartAICleanupView(onDeletion: { _, _, _ in
                 refreshData()
             })
         }
@@ -232,13 +246,25 @@ struct HomeView: View {
                 .environmentObject(purchaseManager)
             }
         }
-        .sheet(isPresented: $showingSaleOffer) {
-            if let offering = saleOffering {
-                PaywallView(offering: offering) { _ in
-                    showingSaleOffer = false
-                }
-                .environmentObject(purchaseManager)
+        .sheet(isPresented: $showingSmartModeDetail) {
+            if let mode = selectedSmartMode {
+                SmartCleaningDetailView(mode: mode, onDeletion: { count, deletedAssets, modeID in
+                    // Update cache locally if we have the assets and mode
+                    if let assets = deletedAssets, let mid = modeID {
+                        SmartCleaningService.shared.updateCacheAfterDeletion(assets: assets, modeID: mid)
+                    } else if count > 0 {
+                        SmartCleaningService.shared.invalidateCache()
+                    }
+                    
+                    refreshData()
+                    loadSmartCleaningModes()
+                })
             }
+        }
+        .sheet(isPresented: $showingSmartCleanupHub) {
+            SmartCleanupHubView(onDeletion: { _, _, _ in
+                refreshData()
+            })
         }
     }
     
@@ -273,7 +299,7 @@ struct HomeView: View {
                 UtilityCard(
                     icon: "shuffle",
                     title: "Shuffle",
-                    subtitle: "",
+                    subtitle: nil,
                     count: totalPhotoCount,
                     countLabel: "photos",
                     color: .orange,
@@ -288,7 +314,7 @@ struct HomeView: View {
                 UtilityCard(
                     icon: "heart.fill",
                     title: "Favorites",
-                    subtitle: "",
+                    subtitle: nil,
                     count: animatedFavoriteCount,
                     countLabel: "photos",
                     color: .red,
@@ -303,7 +329,7 @@ struct HomeView: View {
                 UtilityCard(
                     icon: "rectangle.3.group",
                     title: "Screenshots",
-                    subtitle: "",
+                    subtitle: nil,
                     count: animatedScreenshotCount,
                     countLabel: nil,
                     color: .purple,
@@ -318,7 +344,7 @@ struct HomeView: View {
                 UtilityCard(
                     icon: "video.fill",
                     title: "Videos",
-                    subtitle: "",
+                    subtitle: nil,
                     count: animatedVideoCount,
                     countLabel: nil,
                     color: .blue,
@@ -348,9 +374,15 @@ struct HomeView: View {
     // MARK: - On This Day Section
     private var onThisDaySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("On this day")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundColor(.primary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("On this day")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.primary)
+                
+                Text("Clean your library one day at a time")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
             
             if onThisDayPhotos.isEmpty {
                 Text("No photos from this day in previous years")
@@ -451,36 +483,11 @@ struct HomeView: View {
     // MARK: - Smart Cleaning Section
     private var smartCleaningSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Smart Cleaning")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundColor(.primary)
-            
-            // Duplicates and Smart AI row
-            HStack(spacing: 12) {
-                Button(action: handleDuplicatesTap) {
-                    smartCleaningCard(
-                        icon: "doc.on.doc",
-                        accentColor: .orange,
-                        title: "Duplicates",
-                        subtitle: hasPremiumAccess ? "Find and clear lookalikes fast" : "Premium feature",
-                        strokeColor: Color.orange.opacity(0.3),
-                        showsBetaBadge: hasPremiumAccess
-                    )
-                }
-                .buttonStyle(PlainButtonStyle())
-                
-                Button(action: handleSmartAICleanup) {
-                    smartCleaningCard(
-                        icon: "sparkles",
-                        accentColor: .purple,
-                        title: "Smart AI",
-                        subtitle: hasPremiumAccess ? "Auto-detects junk photos" : "Premium feature",
-                        strokeColor: Color.purple.opacity(0.3),
-                        showsBetaBadge: hasPremiumAccess
-                    )
-                }
-                .buttonStyle(PlainButtonStyle())
+            // Main Smart Cleanup Hub button (header removed, duplicates included in hub)
+            Button(action: handleSmartCleanupHub) {
+                smartCleanupHubCard
             }
+            .buttonStyle(PlainButtonStyle())
             
             if !hasPremiumAccess {
                 Text("""
@@ -491,15 +498,118 @@ struct HomeView: View {
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 4)
             }
-            
         }
     }
+    
+    // MARK: - Smart Cleanup Hub Card
+    private var smartCleanupHubCard: some View {
+        HStack(spacing: 16) {
+            // Icon with gradient background
+            ZStack {
+                LinearGradient(
+                    gradient: Gradient(colors: [.purple, .blue]),
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                
+                Image(systemName: "sparkles")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("Smart Cleanup")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.primary)
+                    
+                    if let savings = formattedTotalSavings {
+                        Text(savings)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.green)
+                            .clipShape(Capsule())
+                    } else if isLoadingSmartModes {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                            .padding(.leading, 4)
+                    }
+                }
+                
+                Text(hasPremiumAccess ? "Bulk delete blurry, old, & large files" : "Premium feature")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Image(systemName: "chevron.right")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.secondary)
+        }
+        .padding(16)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(
+                    LinearGradient(
+                        gradient: Gradient(colors: [.purple.opacity(0.3), .blue.opacity(0.3)]),
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ),
+                    lineWidth: 2
+                )
+        )
+    }
+    
+    private var formattedTotalSavings: String? {
+        let total = smartCleaningModes.reduce(0) { $0 + $1.totalSize }
+        if total == 0 { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB, .useMB]
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        return formatter.string(fromByteCount: total)
+    }
+    
+    private var smartCleaningModesGrid: some View {
+        VStack(spacing: 12) {
+            if isLoadingSmartModes {
+                HStack {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Scanning your library...")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 20)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ForEach(smartCleaningModes) { mode in
+                        Button(action: {
+                            selectedSmartMode = mode
+                            showingSmartModeDetail = true
+                        }) {
+                            SmartCleaningModeCard(mode: mode)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                }
+            }
+        }
+    }
+
     
     private func smartCleaningCard(
         icon: String,
         accentColor: Color,
-        title: String,
-        subtitle: String,
+        title: LocalizedStringKey,
+        subtitle: LocalizedStringKey,
         strokeColor: Color,
         showsBetaBadge: Bool = false
     ) -> some View {
@@ -717,6 +827,9 @@ struct HomeView: View {
         Task(priority: .utility) {
             await loadPhotoSummaryProgressively()
         }
+        
+        // Load smart cleaning modes in background
+        loadSmartCleaningModes()
     }
     
     
@@ -1049,58 +1162,44 @@ struct HomeView: View {
     }
     
     private func handleSmartAICleanup() {
-        // Track feature usage
-        AnalyticsManager.shared.trackFeatureUsed(feature: .smartAI, parameters: [
-            "has_premium": hasPremiumAccess,
-            "source": "home_view"
-        ])
-
         if hasPremiumAccess {
             showingSmartAICleanup = true
         } else {
-            // Check for sale offer first, then fall back to feature gate
-            checkAndShowSaleOrFeatureGate(showSaleCallback: {
-                showingSaleOffer = true
-            }, showFeatureGateCallback: {
-                showingSmartAIPaywall = true
-            })
+            // Show feature gate paywall for free users
+            showingSmartAIPaywall = true
+        }
+    }
+    
+    private func handleSmartCleanupHub() {
+        if hasPremiumAccess {
+            showingSmartCleanupHub = true
+        } else {
+            // Show feature gate paywall for free users
+            showingSmartAIPaywall = true
         }
     }
     
     private func handleDuplicatesTap() {
-        // Track feature usage
-        AnalyticsManager.shared.trackFeatureUsed(feature: .duplicates, parameters: [
-            "has_premium": hasPremiumAccess,
-            "source": "home_view"
-        ])
-
         if hasPremiumAccess {
             showingDuplicateReview = true
         } else {
-            // Check for sale offer first, then fall back to feature gate
-            checkAndShowSaleOrFeatureGate(showSaleCallback: {
-                showingSaleOffer = true
-            }, showFeatureGateCallback: {
-                showingDuplicatePaywall = true
-            })
+            // Show feature gate paywall for free users
+            showingDuplicatePaywall = true
         }
     }
     
-    /// Checks if a sale offer is active, if so shows sale paywall, otherwise shows feature gate paywall
-    private func checkAndShowSaleOrFeatureGate(showSaleCallback: @escaping () -> Void, showFeatureGateCallback: @escaping () -> Void) {
-        Task {
-            // Check if sale is active first
-            if let saleOffering = await purchaseManager.getSaleOffer() {
-                // Sale is active - show sale paywall
-                await MainActor.run {
-                    self.saleOffering = saleOffering
-                    showSaleCallback()
-                }
-            } else {
-                // No sale active - show regular feature gate paywall
-                await MainActor.run {
-                    showFeatureGateCallback()
-                }
+    private func loadSmartCleaningModes() {
+        Task(priority: .utility) {
+            await MainActor.run {
+                isLoadingSmartModes = true
+            }
+            
+            // Use cached modes for instant display - this matches the values inside the Hub
+            let modes = await SmartCleaningService.shared.loadHubModesCached(forceRefresh: false)
+            
+            await MainActor.run {
+                self.smartCleaningModes = modes
+                self.isLoadingSmartModes = false
             }
         }
     }
@@ -1216,12 +1315,14 @@ struct HomeView: View {
             // RevenueCat targeting will handle showing the right offer based on the custom attribute
             Task {
                 // Wait a moment for RevenueCat to sync attributes (attributes are synced during onboarding)
-                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds to ensure attributes are synced
+                // Give RevenueCat time to process the attribute sync
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds to ensure attributes are synced
                 
                 // Fetch offering for the "home_post_onboarding" placement
-                // This will only return an offering if the targeting rule matches (user has "skipped" attribute)
+                // Set allowFallback to false so we only get the placement offering if targeting rule matches
+                // This will return nil if the user doesn't have the "skipped" attribute
                 let placementId = PurchaseManager.PlacementIdentifier.homePostOnboarding.rawValue
-                if let offering = await purchaseManager.getOffering(forPlacement: placementId) {
+                if let offering = await purchaseManager.getOffering(forPlacement: placementId, allowFallback: false) {
                     await MainActor.run {
                         self.postOnboardingOffering = offering
                         self.showingPostOnboardingOffer = true
@@ -1229,7 +1330,7 @@ struct HomeView: View {
                         UserDefaults.standard.set(true, forKey: "hasShownPostOnboardingOffer")
                     }
                 } else {
-                    // No offering returned - either user subscribed or no rule matches
+                    // No offering returned - targeting rule doesn't match (user doesn't have "skipped" attribute)
                     // Mark as shown so we don't check again
                     await MainActor.run {
                         UserDefaults.standard.set(true, forKey: "hasShownPostOnboardingOffer")
@@ -1246,7 +1347,7 @@ struct HomeView: View {
 // MARK: - Supporting Views
 
 struct StatCard: View {
-    let title: String
+    let title: LocalizedStringKey
     let count: Int
     let isLoading: Bool
     
@@ -1275,10 +1376,10 @@ struct StatCard: View {
 
 struct UtilityCard: View {
     let icon: String
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey?
     let count: Int
-    let countLabel: String?
+    let countLabel: LocalizedStringKey?
     let color: Color
     let isLoading: Bool
     let action: () -> Void
@@ -1319,7 +1420,7 @@ struct UtilityCard: View {
                     }
                 }
                 
-                if !subtitle.isEmpty {
+                if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
@@ -1337,6 +1438,78 @@ struct UtilityCard: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct SmartCleaningModeCard: View {
+    let mode: SmartCleaningMode
+    
+    private var accentColor: Color {
+        switch mode.color {
+        case "red": return .red
+        case "blue": return .blue
+        case "green": return .green
+        case "orange": return .orange
+        case "purple": return .purple
+        default: return .blue
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(accentColor)
+                
+                Spacer()
+                
+                // Storage size badge
+                Text(mode.formattedSize)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(accentColor)
+                    .clipShape(Capsule())
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(mode.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                
+                Text(mode.subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+            
+            Spacer()
+            
+            // Item count
+            HStack {
+                Text("\(mode.assetCount) items")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(height: 130)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(accentColor.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 

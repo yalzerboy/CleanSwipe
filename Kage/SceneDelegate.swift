@@ -11,7 +11,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let shortcutItem = connectionOptions.shortcutItem else { return }
         debugLog("SceneDelegate willConnectTo with shortcut \(shortcutItem.type)")
-        AppDelegate.shared?.registerPendingQuickAction(from: shortcutItem)
+        (UIApplication.shared.delegate as? AppDelegate)?.registerPendingQuickAction(from: shortcutItem)
     }
     
     func windowScene(
@@ -19,20 +19,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         performActionFor shortcutItem: UIApplicationShortcutItem,
         completionHandler: @escaping (Bool) -> Void
     ) {
-        debugLog("SceneDelegate performActionFor \(shortcutItem.type), app state: \(UIApplication.shared.applicationState.rawValue)")
-        if let appDelegate = AppDelegate.shared {
-            debugLog("Calling AppDelegate.handle")
-            let handled = appDelegate.handle(shortcutItem: shortcutItem)
-            debugLog("AppDelegate.handle returned: \(handled)")
-            completionHandler(handled)
-        } else {
-            debugLog("AppDelegate.shared not found")
-            completionHandler(false)
-        }
+        debugLog("SceneDelegate performActionFor \(shortcutItem.type)")
+        let handled = (UIApplication.shared.delegate as? AppDelegate)?.handle(shortcutItem: shortcutItem) ?? false
+        completionHandler(handled)
     }
     
     private func debugLog(_ message: String) {
         #if DEBUG
+        print("DEBUG: \(message)")
         #endif
     }
 }

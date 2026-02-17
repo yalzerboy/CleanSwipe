@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import SwiftUI
 
 enum PhotoFilter: Equatable, Codable, Hashable {
     case random
@@ -9,20 +10,20 @@ enum PhotoFilter: Equatable, Codable, Hashable {
     case favorites
     case shortVideos
     
-    var displayName: String {
+    var displayName: LocalizedStringKey {
         switch self {
         case .random:
-            return "Random"
+            return LocalizedStringKey("Random")
         case .onThisDay:
-            return "On this Day"
+            return LocalizedStringKey("On this Day")
         case .screenshots:
-            return "Screenshots"
+            return LocalizedStringKey("Screenshots")
         case .year(let year):
-            return String(year)
+            return LocalizedStringKey(String(year))
         case .favorites:
-            return "Favorites"
+            return LocalizedStringKey("Favorites")
         case .shortVideos:
-            return "Short Videos"
+            return LocalizedStringKey("Short Videos")
         }
     }
     
