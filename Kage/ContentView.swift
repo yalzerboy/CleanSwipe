@@ -1307,6 +1307,7 @@ struct ContentView: View {
             // Photo/Video display with swipe indicators
             // Gesture attached at this level for stability - doesn't get recreated when content changes
             ZStack {
+
                 // Photo/Video content
                 if isCurrentAssetVideo {
                     if let player = currentVideoPlayer {
@@ -1314,6 +1315,10 @@ struct ContentView: View {
                             AspectFillVideoPlayer(player: player)
                                 .id(currentAsset?.localIdentifier ?? UUID().uuidString)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .compositingGroup()
+                                .overlay {
+                                    swipeTintOverlay(for: currentDragOffset)
+                                }
                                 .allowsHitTesting(false)
                             
                             // Hit testing layer - gesture moved to outer ZStack level to prevent jitter
@@ -1364,9 +1369,6 @@ struct ContentView: View {
                         .opacity(photoTransitionOpacity)
                         .scaleEffect(isUndoing ? 1.1 : photoTransitionScale)
                         .animation(isUndoing ? .easeInOut(duration: 0.3) : nil, value: isUndoing)
-                        .overlay {
-                            swipeGlow(for: currentDragOffset, cornerRadius: 16)
-                        }
                         // CRITICAL: Attach gesture to the video container just like the image container
                         // This was missing, causing swipes to be ignored on videos
                         .simultaneousGesture(
@@ -1468,6 +1470,10 @@ struct ContentView: View {
                                 imageID: currentAsset?.localIdentifier ?? UUID().uuidString
                             )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .compositingGroup()
+                                .overlay {
+                                    swipeTintOverlay(for: currentDragOffset)
+                                }
                                 .blur(radius: isCurrentImageLowQuality ? 1.5 : 0) // Subtle blur effect for low quality
                                 .overlay(
                                     // Add subtle border when low quality
@@ -1496,9 +1502,6 @@ struct ContentView: View {
                         .opacity(photoTransitionOpacity)
                         .scaleEffect(isUndoing ? 1.1 : photoTransitionScale)
                         .animation(isUndoing ? .easeInOut(duration: 0.3) : nil, value: isUndoing)
-                        .overlay {
-                            swipeGlow(for: currentDragOffset, cornerRadius: 16)
-                        }
                         // Swipe gesture directly on photo container — only active when not zoomed
                         // CRITICAL FIX: Unconditional gesture modifier to prevent view rebuilds
                         // Previously: isPhotoZoomed ? nil : DragGesture... caused the View graph to change
@@ -1751,7 +1754,7 @@ struct ContentView: View {
                             shareCurrentPhoto()
                         }
                     )
-                    .disabled(isUndoing || dragOffset != .zero || isExportingVideo)
+                    .disabled(isUndoing || isExportingVideo)
                     
                     // Favorite button (icon only)
                     IconActionButton(
@@ -1769,7 +1772,7 @@ struct ContentView: View {
                             favoriteCurrentPhoto()
                         }
                     )
-                    .disabled(isUndoing || dragOffset != .zero)
+                    .disabled(isUndoing)
                     
                     // Keep button (full width with text)
                     SwipeActionButton(
@@ -1838,31 +1841,20 @@ struct ContentView: View {
     }
     
     @ViewBuilder
-    private func swipeGlow(for offset: CGSize, cornerRadius: CGFloat) -> some View {
-        // Optimized for performance - use simple threshold check
+    private func swipeTintOverlay(for offset: CGSize) -> some View {
         let width = offset.width
         let absWidth = abs(width)
-        
-        // Only show overlay if drag is significant (reduces unnecessary rendering)
+
         if absWidth > 16.0 {
-            // Simplified progress calculation for better performance
             let progress = min(absWidth / 140.0, 1.0)
             let opacity = 0.4 * progress
-            
-            if width > 0 {
-                // Green tint overlay for "keep" swipe
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(Color.green.opacity(opacity))
-                    .allowsHitTesting(false)
-            } else {
-                // Red tint overlay for "delete" swipe
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .fill(Color.red.opacity(opacity))
-                    .allowsHitTesting(false)
-            }
+            Rectangle()
+                .fill((width > 0 ? Color.green : Color.red).opacity(opacity))
+                .blendMode(.sourceAtop)
+                .allowsHitTesting(false)
         }
     }
-    
+
     private var reviewScreen: some View {
         ZStack {
             // Modern gradient background
@@ -4271,10 +4263,14 @@ struct ContentView: View {
     }
     
     private func preloadNextPhotosInBatch() {
+        guard !currentBatch.isEmpty else { return }
+        
         // Preload more photos for TikTok mode since users swipe faster
         let preloadWindow = isTikTokMode ? 4 : 2  // Preload 4 photos for TikTok, 2 for normal mode
-        let startIndex = currentPhotoIndex + 1
+        let safeCurrentIndex = max(-1, min(currentPhotoIndex, currentBatch.count - 1))
+        let startIndex = min(max(safeCurrentIndex + 1, 0), currentBatch.count)
         let endIndex = min(startIndex + preloadWindow, currentBatch.count)
+        guard startIndex < endIndex else { return }
 
         for i in startIndex..<endIndex {
             let asset = currentBatch[i]
@@ -4327,11 +4323,14 @@ struct ContentView: View {
         let (batch, currentIndex, isTikTok) = await MainActor.run {
             (self.currentBatch, self.currentPhotoIndex, self.isTikTokMode)
         }
+        guard !batch.isEmpty else { return }
         
         // Preload more photos for TikTok mode since users swipe faster
         let preloadWindow = isTikTok ? 4 : 2  // Preload 4 photos for TikTok, 2 for normal mode
-        let startIndex = currentIndex + 1
+        let safeCurrentIndex = max(-1, min(currentIndex, batch.count - 1))
+        let startIndex = min(max(safeCurrentIndex + 1, 0), batch.count)
         let endIndex = min(startIndex + preloadWindow, batch.count)
+        guard startIndex < endIndex else { return }
 
         for i in startIndex..<endIndex {
             let asset = batch[i]
@@ -4537,7 +4536,6 @@ struct ContentView: View {
         
         // Load metadata (already async internally, won't block)
         loadPhotoMetadata(for: asset)
-        
         // Start preloading next photos (in background) - already handled in nextPhoto()
         // but keep here as fallback
         DispatchQueue.global(qos: .utility).async {
@@ -6123,6 +6121,7 @@ struct ContentView: View {
         if wasNewPhoto {
             totalProcessed += 1
         }
+        incrementDailyProcessedCount()
         filterProcessedCounts[currentFilter, default: 0] += 1
         
         // If we're in Random mode, also increment the count for the photo's specific year
@@ -6637,14 +6636,6 @@ struct ContentView: View {
             
             invalidatePhotoCountCache()
             
-            // Track photos processed today
-            let calendar = Calendar.current
-            let today = calendar.startOfDay(for: Date())
-            let components = calendar.dateComponents([.year, .month, .day], from: today)
-            let todayKey = "photosProcessed_\(components.year!)_\(components.month!)_\(components.day!)"
-            let currentCount = UserDefaults.standard.integer(forKey: todayKey)
-            UserDefaults.standard.set(currentCount + swipedPhotos.count, forKey: todayKey)
-            
             // Save persistence data
             savePersistedData()
             
@@ -6693,14 +6684,6 @@ struct ContentView: View {
             globalProcessedPhotoIds.insert(swipedPhoto.asset.localIdentifier)
         }
         invalidatePhotoCountCache()
-        
-        // Track photos processed today
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let components = calendar.dateComponents([.year, .month, .day], from: today)
-        let todayKey = "photosProcessed_\(components.year!)_\(components.month!)_\(components.day!)"
-        let currentCount = UserDefaults.standard.integer(forKey: todayKey)
-        UserDefaults.standard.set(currentCount + swipedPhotos.count, forKey: todayKey)
         
         // Save persistence data
         savePersistedData()
@@ -7681,49 +7664,27 @@ struct ContentView: View {
     }
     
     private func loadPersistedData() {
-        // Load global processed photo IDs asynchronously to avoid blocking app launch
-        Task {
-        if let savedGlobalPhotoIds = UserDefaults.standard.array(forKey: globalProcessedPhotoIdsKey) as? [String] {
-                await MainActor.run {
-                    self.globalProcessedPhotoIds = Set(savedGlobalPhotoIds)
-                    self.totalProcessed = self.globalProcessedPhotoIds.count
-                }
-            }
-
-            // Load other persisted data
-            // Load stats
-            totalStorageSaved = UserDefaults.standard.double(forKey: totalStorageSavedKey)
-            if let savedSwipeDays = UserDefaults.standard.array(forKey: swipeDaysKey) as? [String] {
-                swipeDays = Set(savedSwipeDays)
-            }
-
-            // Load processed photo IDs per filter
-            if let processedIdsData = UserDefaults.standard.data(forKey: processedPhotoIdsKey),
-               let loadedProcessedIds = try? JSONDecoder().decode([PhotoFilter: Set<String>].self, from: processedIdsData) {
-                processedPhotoIds = loadedProcessedIds
-            }
-
-            // Load filter processed counts
-            if let filterCountsData = UserDefaults.standard.data(forKey: filterProcessedCountsKey),
-               let loadedFilterCounts = try? JSONDecoder().decode([PhotoFilter: Int].self, from: filterCountsData) {
-                filterProcessedCounts = loadedFilterCounts
-            }
+        let defaults = UserDefaults.standard
+        
+        // Support both legacy Data encoding and current [String] array format.
+        if let savedGlobalPhotoIds = defaults.array(forKey: globalProcessedPhotoIdsKey) as? [String] {
+            globalProcessedPhotoIds = Set(savedGlobalPhotoIds)
+        } else if let savedGlobalIdsData = defaults.data(forKey: globalProcessedPhotoIdsKey),
+                  let savedGlobalPhotoIds = try? JSONDecoder().decode([String].self, from: savedGlobalIdsData) {
+            globalProcessedPhotoIds = Set(savedGlobalPhotoIds)
         }
         
-        // Load processed photo IDs per filter
-        if let savedPhotoIdsData = UserDefaults.standard.data(forKey: processedPhotoIdsKey),
+        if let savedPhotoIdsData = defaults.data(forKey: processedPhotoIdsKey),
            let savedPhotoIds = try? JSONDecoder().decode([PhotoFilter: Set<String>].self, from: savedPhotoIdsData) {
             processedPhotoIds = savedPhotoIds
         }
         
-        // Load total processed count (or recalculate from global set for accuracy)
-        totalProcessed = globalProcessedPhotoIds.count
-        
-        // Load filter-specific counts
-        if let savedFilterCountsData = UserDefaults.standard.data(forKey: filterProcessedCountsKey),
+        if let savedFilterCountsData = defaults.data(forKey: filterProcessedCountsKey),
            let savedFilterCounts = try? JSONDecoder().decode([PhotoFilter: Int].self, from: savedFilterCountsData) {
             filterProcessedCounts = savedFilterCounts
         }
+        
+        totalProcessed = globalProcessedPhotoIds.count
 
         resetOnThisDayProgressIfNeeded()
         
@@ -7734,11 +7695,11 @@ struct ContentView: View {
         // The contentType is set correctly in init() and should not be overridden
         
         // Load total photos deleted
-        totalPhotosDeleted = UserDefaults.standard.integer(forKey: totalPhotosDeletedKey)
+        totalPhotosDeleted = defaults.integer(forKey: totalPhotosDeletedKey)
         
         // Load stats data
-        totalStorageSaved = UserDefaults.standard.double(forKey: totalStorageSavedKey)
-        if let savedSwipeDays = UserDefaults.standard.array(forKey: swipeDaysKey) as? [String] {
+        totalStorageSaved = defaults.double(forKey: totalStorageSavedKey)
+        if let savedSwipeDays = defaults.array(forKey: swipeDaysKey) as? [String] {
             swipeDays = Set(savedSwipeDays)
         }
         streakManager.reloadSwipeDays()
@@ -7772,26 +7733,25 @@ struct ContentView: View {
             let photoIdsData = try? JSONEncoder().encode(processedIds)
             let filterCountsData = try? JSONEncoder().encode(filterCounts)
             let filterData = try? JSONEncoder().encode(selectedFilterValue)
-         // Update lifetime total
-            // Update lifetime total
-            // CRITICAL FIX: Set directly to count instead of adding to previous value
-            // This prevents artificial inflation where we keep adding history to the total
-            let newLifetime = globalProcessedPhotoIds.count
+            
+            // Keep lifetime total aligned to unique processed IDs only.
+            let newLifetime = globalIds.count
             UserDefaults.standard.set(newLifetime, forKey: totalProcessedLifetimeKey)
-        
-        // Use session key for current session tracking if needed
-        let totalProcessedKeyName = self.totalProcessedKey
-        if let storedValue = UserDefaults.standard.object(forKey: totalProcessedKeyName) as? Int {
-             // Already have a stored value
-        } else {
-            UserDefaults.standard.set(0, forKey: totalProcessedKeyName)
-        }
-        
-        if let globalIdsData = try? JSONEncoder().encode(globalProcessedPhotoIds) {
-            UserDefaults.standard.set(globalIdsData, forKey: globalProcessedPhotoIdsKey)
-            // Save count to session key
-            UserDefaults.standard.set(globalProcessedPhotoIds.count, forKey: totalProcessedKeyName)
-        }
+            
+            // Use session key for current session tracking if needed.
+            if UserDefaults.standard.object(forKey: totalProcessedKeyName) == nil {
+                UserDefaults.standard.set(0, forKey: totalProcessedKeyName)
+            }
+            
+            UserDefaults.standard.set(globalIds, forKey: globalIdsKey)
+            UserDefaults.standard.set(globalIds.count, forKey: totalProcessedKeyName)
+            
+            if let photoIdsData = photoIdsData {
+                UserDefaults.standard.set(photoIdsData, forKey: processedIdsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: processedIdsKey)
+            }
+            
             if let filterCountsData = filterCountsData {
                 UserDefaults.standard.set(filterCountsData, forKey: filterCountsKey)
             }
@@ -7806,7 +7766,7 @@ struct ContentView: View {
             UserDefaults.standard.set(todayStart, forKey: lastOnThisDayResetDateKeyName)
         }
     }
-    
+
     private func resetProgress() {
         // Clear all persistence data
         UserDefaults.standard.removeObject(forKey: globalProcessedPhotoIdsKey)
@@ -7855,6 +7815,15 @@ struct ContentView: View {
             defaults.set(today, forKey: lastOnThisDayResetDateKey)
             savePersistedData()
         }
+    }
+    
+    private func incrementDailyProcessedCount() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let components = calendar.dateComponents([.year, .month, .day], from: today)
+        let todayKey = "photosProcessed_\(components.year!)_\(components.month!)_\(components.day!)"
+        let currentCount = UserDefaults.standard.integer(forKey: todayKey)
+        UserDefaults.standard.set(currentCount + 1, forKey: todayKey)
     }
     
     private func checkNetworkConnectivity() {
@@ -8996,6 +8965,7 @@ private struct IconActionButton: View {
 // MARK: - ShareSheet Component
 struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [Any]
+    var onComplete: ((Bool, UIActivity.ActivityType?) -> Void)? = nil
     
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
@@ -9009,8 +8979,10 @@ struct ShareSheet: UIViewControllerRepresentable {
         ]
         
         // Set completion handler to dismiss the sheet
-        controller.completionWithItemsHandler = { _, _, _, _ in
-            // The sheet will be dismissed automatically
+        controller.completionWithItemsHandler = { activityType, completed, _, _ in
+            DispatchQueue.main.async {
+                onComplete?(completed, activityType)
+            }
         }
         
         return controller
@@ -9332,6 +9304,3 @@ private struct IndeterminateProgressBar: View {
 #Preview {
     ContentView(contentType: .photos, showTutorial: .constant(true))
 }
-
-
-

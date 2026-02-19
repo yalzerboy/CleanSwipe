@@ -8,9 +8,29 @@
 import SwiftUI
 import Photos
 import UIKit
+import MessageUI
+import LinkPresentation
 import RevenueCat
 
 struct HomeView: View {
+    private struct OnThisDayBucket: Identifiable {
+        let daysAgo: Int
+        let date: Date
+        let totalCount: Int
+        let previewAssets: [PHAsset]
+        let assetIdentifiers: [String]
+        let isLoaded: Bool
+        
+        var id: Int { daysAgo }
+    }
+    
+    private struct AlbumSummary: Identifiable {
+        let id: String
+        let title: String
+        let itemCount: Int
+        let coverAsset: PHAsset?
+    }
+    
     @Binding private var pendingQuickAction: QuickActionType?
     @EnvironmentObject private var purchaseManager: PurchaseManager
     @EnvironmentObject private var notificationManager: NotificationManager
@@ -22,9 +42,11 @@ struct HomeView: View {
     @State private var contentViewContentType: ContentType = .photos  // Separate state for ContentView
     @State private var showingContentView = false
     @State private var showingSettings = false
+    @State private var showingInviteFriends = false
     @State private var showingWhatsNew = false
     @State private var showingSmartAICleanup = false
     @State private var showingSmartAIPaywall = false
+    @State private var showingOnThisDayHistoryPaywall = false
     @State private var showingDuplicateReview = false
     @State private var showingDuplicatePaywall = false
     @State private var showingTripBrowse = false
@@ -51,6 +73,7 @@ struct HomeView: View {
     @State private var lastWeekCount = 0
     @State private var totalProcessed = 0 // Track total processed photos
     @State private var processedPhotoIds: [PhotoFilter: Set<String>] = [:] // Track processed photos per filter
+    @AppStorage("hasPrewarmedHolidayModeScan") private var hasPrewarmedHolidayModeScan = false
     
     // Legacy streak tracking (will be replaced by StreakManager)
     @State private var sortingProgress = 0.0
@@ -58,6 +81,11 @@ struct HomeView: View {
     
     // Photo collections
     @State private var onThisDayPhotos: [PHAsset] = []
+    @State private var onThisDayTotalCount = 0
+    @State private var onThisDayBuckets: [OnThisDayBucket] = []
+    @State private var selectedOnThisDayPage = 0
+    @State private var isLoadingOnThisDay = false
+    @State private var hasOnThisDayHydrated = false
     @State private var videoCount = 0
     @State private var screenshotCount = 0
     @State private var favoriteCount = 0
@@ -66,6 +94,10 @@ struct HomeView: View {
     @State private var yearThumbnails: [Int: PHAsset] = [:]
     @State private var cachedYearAssets: [PHAsset] = []
     @State private var cachedOnThisDayAssets: [PHAsset] = []
+    @State private var utilityCardBackgrounds: [String: UIImage] = [:]
+    @State private var albumSummaries: [AlbumSummary] = []
+    @State private var isLoadingAlbums = false
+    @State private var openingAlbumID: String?
     
     // Smart Cleaning Modes
     @State private var smartCleaningModes: [SmartCleaningMode] = []
@@ -81,30 +113,29 @@ struct HomeView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                // Beautiful modern blue gradient background
-                LinearGradient(
-                    gradient: Gradient(colors: colorScheme == .dark ? [
-                        Color(red: 0.1, green: 0.1, blue: 0.2),
-                        Color(red: 0.05, green: 0.05, blue: 0.1),
-                        Color.black
-                    ] : [
-                        Color(red: 0.4, green: 0.7, blue: 1.0),    // Modern bright blue at top
-                        Color(red: 0.6, green: 0.85, blue: 1.0),   // Sky blue middle
-                        Color(red: 0.85, green: 0.95, blue: 1.0).opacity(0.8),  // Light blue
-                        Color(.systemBackground)                   // Adaptive background at bottom
-                    ]),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                Group {
+                    if colorScheme == .dark {
+                        LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color(red: 0.1, green: 0.1, blue: 0.2),
+                                Color(red: 0.05, green: 0.05, blue: 0.1),
+                                Color.black
+                            ]),
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        Color(red: 0.97, green: 0.94, blue: 0.88) // light paper/beige
+                    }
+                }
                 .ignoresSafeArea()
                 
                 ScrollView([.vertical], showsIndicators: false) {
                     VStack(spacing: 16) {
-                        if hasOnThisDayPhotos && !isOnThisDayDone {
-                            onThisDaySection
-                                .padding(.horizontal, 16)
-                                .padding(.top, 8)
-                        }
+                        onThisDaySection
+                            .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
+                            .padding(.horizontal, 16)
+                            .padding(.top, 8)
                         
                         Group {
                             // statsSection removed
@@ -113,25 +144,23 @@ struct HomeView: View {
                             
                             // Smart Cleaning section moved here - above streak, below brainrot reel
                             smartCleaningSection
-                                .padding(.top, -4) // Reduce gap to brainrot button
+                                .padding(.top, -10) // Tighter grouping with reel-style button
                                 .padding(.horizontal, 16)
                             
                             holidayModeButton
+                                .padding(.top, -8) // Keep holiday mode close to smart cleanup
                                 .padding(.horizontal, 16)
                             
                             streakSection
                                 .padding(.horizontal, 16)
-                            
-                            if !hasOnThisDayPhotos || isOnThisDayDone {
-                                onThisDaySection
-                                    .padding(.horizontal, 16)
-                            }
                         }
                         
                         myLifeSection
                         
                         myCleaningStatsSection
                             .padding(.horizontal, 16)
+                        
+                        albumCarouselSection
                     }
                     .padding(.bottom, 100)
                     .frame(maxWidth: .infinity)
@@ -157,15 +186,20 @@ struct HomeView: View {
                         .frame(height: 32)
                 }
                 
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        showingSettings = true
-                    }) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.2), radius: 1, x: 0, y: 1)
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Button(action: { showingInviteFriends = true }) {
+                        Image(systemName: "gift.fill")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.green)
                     }
+                    .accessibilityLabel("Invite friends")
+                    
+                    Button(action: { showingSettings = true }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Settings")
                 }
             }
         }
@@ -191,8 +225,8 @@ struct HomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openOnThisDayFilter)) { _ in
             // Widget deep link: open On This Day mode
-            selectedContentType = .photos
-            contentViewContentType = .photos
+            selectedContentType = .photosAndVideos
+            contentViewContentType = .photosAndVideos
             selectedFilter = .onThisDay
             showingContentView = true
         }
@@ -242,6 +276,10 @@ struct HomeView: View {
         .sheet(isPresented: $showingSettings) {
             SettingsView()
         }
+        .sheet(isPresented: $showingInviteFriends) {
+            InviteFriendsView()
+                .environmentObject(purchaseManager)
+        }
         .sheet(isPresented: $showingWhatsNew) {
             WhatsNewView()
         }
@@ -258,6 +296,15 @@ struct HomeView: View {
                     if success {
                         showingSmartAICleanup = true
                     }
+                }
+            )
+            .environmentObject(purchaseManager)
+        }
+        .sheet(isPresented: $showingOnThisDayHistoryPaywall) {
+            PlacementPaywallWrapperWithSuccess(
+                placementIdentifier: PurchaseManager.PlacementIdentifier.featureGate.rawValue,
+                onDismiss: { _ in
+                    showingOnThisDayHistoryPaywall = false
                 }
             )
             .environmentObject(purchaseManager)
@@ -336,6 +383,8 @@ struct HomeView: View {
                     count: totalPhotoCount,
                     countLabel: "photos",
                     color: .orange,
+                    borderColor: .orange,
+                    backgroundImage: utilityCardBackgrounds["shuffle"],
                     isLoading: false
                 ) {
                     selectedContentType = .photos
@@ -351,6 +400,8 @@ struct HomeView: View {
                     count: animatedFavoriteCount,
                     countLabel: "photos",
                     color: .red,
+                    borderColor: .red,
+                    backgroundImage: utilityCardBackgrounds["favorites"],
                     isLoading: false
                 ) {
                     selectedContentType = .photos
@@ -366,6 +417,8 @@ struct HomeView: View {
                     count: animatedScreenshotCount,
                     countLabel: nil,
                     color: .purple,
+                    borderColor: .purple,
+                    backgroundImage: utilityCardBackgrounds["screenshots"],
                     isLoading: false
                 ) {
                     selectedContentType = .photos
@@ -381,6 +434,8 @@ struct HomeView: View {
                     count: animatedVideoCount,
                     countLabel: nil,
                     color: .blue,
+                    borderColor: .blue,
+                    backgroundImage: utilityCardBackgrounds["videos"],
                     isLoading: false
                 ) {
                     // Set content type explicitly for ContentView
@@ -412,85 +467,177 @@ struct HomeView: View {
     // MARK: - On This Day Section
     @ViewBuilder
     private var onThisDaySection: some View {
-        if onThisDayPhotos.isEmpty {
-             VStack(alignment: .leading, spacing: 12) {
-                 Text("On this day")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .foregroundColor(.primary)
-                 
-                 Text("No photos from this day in previous years")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-             }
+        let onThisDayHeader = VStack(spacing: 2) {
+            Text("On this day")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundColor(.primary)
+            Text("Through the years")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        
+        if onThisDayBuckets.isEmpty {
+            if isLoadingOnThisDay {
+                VStack(alignment: .leading, spacing: 10) {
+                    onThisDayHeader
+                    
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .fill(Color(.systemGray6))
+                        .frame(height: 165)
+                        .overlay {
+                            VStack(spacing: 10) {
+                                ProgressView()
+                                    .scaleEffect(0.95)
+                                Text("Loading On This Day...")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    onThisDayHeader
+                    
+                    Text("No items from this day in previous years")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 20)
+                }
+            }
         } else {
-             Button(action: {
-                 selectedContentType = .photos
-                 contentViewContentType = .photos
-                 selectedFilter = .onThisDay
-                 showingContentView = true
-             }) {
-                 VStack(spacing: 12) {
-                     // Title Header inside the card
-                     HStack {
-                         Text("On this day")
-                             .font(.system(size: 22, weight: .bold, design: .rounded))
-                             .foregroundColor(.primary)
-                         
-                         Spacer()
-                         
-                         if isOnThisDayDone {
-                             Image(systemName: "checkmark.circle.fill")
-                                 .foregroundColor(.green)
-                                 .font(.system(size: 22))
-                         }
-                     }
-                     
-                     // Show multiple photos in a grid layout
-                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                         ForEach(onThisDayPhotos.prefix(8), id: \.localIdentifier) { asset in
-                             OnThisDayThumbnail(asset: asset)
-                                 .opacity(isOnThisDayDone ? 0.5 : 1.0)
-                         }
-                     }
-                     
-                     // Button text and count
-                     HStack {
-                         VStack(alignment: .leading, spacing: 4) {
-                             Text(isOnThisDayDone ? "All Done" : "View photos from \(formatCurrentDate())")
-                                 .font(.system(size: 16, weight: .semibold))
-                                 .foregroundColor(isOnThisDayDone ? .green : .primary)
-                             
-                             Text("\(onThisDayPhotos.count) photos from this day across all years")
-                                 .font(.system(size: 12, weight: .medium))
-                                 .foregroundColor(.secondary)
-                         }
-                         
-                         Spacer()
-                         
-                         if isOnThisDayDone {
-                             Image(systemName: "checkmark.circle.fill")
-                                 .font(.system(size: 24))
-                                 .foregroundColor(.green)
-                         } else {
-                             Image(systemName: "arrow.right.circle.fill")
-                                 .font(.system(size: 20))
-                                 .foregroundColor(.blue)
-                         }
-                     }
-                 }
-                 .padding(16)
-                 .frame(maxWidth: .infinity)
-                 .background(Color(.systemBackground))
-                 .clipShape(RoundedRectangle(cornerRadius: 16))
-                 .overlay(
-                     RoundedRectangle(cornerRadius: 16)
-                         .stroke(isOnThisDayDone ? Color.green.opacity(0.3) : Color(.systemGray5), lineWidth: isOnThisDayDone ? 2 : 1)
-                 )
-             }
-             .buttonStyle(PlainButtonStyle())
-             .disabled(isOnThisDayDone)
+            VStack(alignment: .leading, spacing: 10) {
+                onThisDayHeader
+                
+                TabView(selection: $selectedOnThisDayPage) {
+                    ForEach(Array(onThisDayBuckets.enumerated()), id: \.offset) { index, bucket in
+                        let isLocked = bucket.daysAgo > 0 && !hasPremiumAccess
+                        let isDone = isOnThisDayBucketDone(bucket)
+                        GeometryReader { geometry in
+                            let width = geometry.size.width
+                            let height = geometry.size.height
+                            let thumbSize = min(width * 0.29, 96)
+                            let thumbnailLayout: [(x: CGFloat, y: CGFloat, r: Double)] = [
+                                (-width * 0.40, -height * 0.30, -15),
+                                (-width * 0.33, height * 0.32, 10),
+                                (width * 0.40, -height * 0.29, 14),
+                                (width * 0.34, height * 0.31, -10)
+                            ]
+                            
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: bucket.daysAgo == 0
+                                                ? [Color(red: 0.84, green: 0.95, blue: 0.81), Color(red: 0.74, green: 0.90, blue: 0.74)]
+                                                : [Color(red: 0.86, green: 0.81, blue: 0.73), Color(red: 0.81, green: 0.75, blue: 0.66)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                            .stroke(
+                                                LinearGradient(
+                                                    colors: [Color.green.opacity(0.75), Color.mint.opacity(0.65)],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                ),
+                                                lineWidth: 2
+                                            )
+                                    )
+                                
+                                if bucket.isLoaded {
+                                    ForEach(Array(bucket.previewAssets.prefix(4).enumerated()), id: \.offset) { thumbIndex, asset in
+                                        let layout = thumbnailLayout[thumbIndex % thumbnailLayout.count]
+                                        OnThisDayThumbnail(asset: asset, size: thumbSize, showVideoBadge: false, cornerRadius: 18)
+                                            .rotationEffect(.degrees(layout.r))
+                                            .offset(x: layout.x, y: layout.y)
+                                    }
+                                }
+                                
+                                VStack(spacing: 2) {
+                                    if bucket.daysAgo > 0 {
+                                        Image(systemName: "backward.fill")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.white.opacity(0.92))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Capsule().fill(Color.black.opacity(0.24)))
+                                            .padding(.bottom, 4)
+                                    }
+                                    
+                                    Text(formatOnThisDayCardDate(bucket.date))
+                                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                                        .foregroundColor(.black.opacity(0.92))
+                                    
+                                    if bucket.isLoaded {
+                                        Text("\(bucket.totalCount) items")
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .foregroundColor(.black.opacity(0.34))
+                                    } else {
+                                        ProgressView()
+                                            .tint(.black.opacity(0.55))
+                                            .scaleEffect(0.8)
+                                            .padding(.top, 6)
+                                    }
+                                    
+                                    if isDone {
+                                        Text("All done")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 9)
+                                            .padding(.vertical, 4)
+                                            .background(Capsule().fill(Color.green.opacity(0.95)))
+                                            .padding(.top, 3)
+
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 18, weight: .bold))
+                                            .foregroundStyle(Color.green)
+                                    }
+                                }
+                                
+                                if isLocked {
+                                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                        .fill(Color.black.opacity(0.40))
+                                    
+                                    VStack(spacing: 8) {
+                                        Image(systemName: "lock.fill")
+                                            .font(.system(size: 20, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Text("Premium")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: 165)
+                        .compositingGroup()
+                        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                        .onTapGesture {
+                            handleOnThisDayCardTap(bucket)
+                        }
+                        .tag(index)
+                    }
+                }
+                .frame(height: 165)
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                
+                if hasOnThisDayHydrated {
+                    HStack(spacing: 8) {
+                        ForEach(onThisDayBuckets.indices, id: \.self) { index in
+                            Circle()
+                                .fill(index == selectedOnThisDayPage ? Color.primary.opacity(0.82) : Color.primary.opacity(0.18))
+                                .frame(width: index == selectedOnThisDayPage ? 10 : 8, height: index == selectedOnThisDayPage ? 10 : 8)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity)
+                }
+            }
         }
     }
     
@@ -524,8 +671,8 @@ struct HomeView: View {
                                 thumbnailAsset: yearThumbnails[year],
                                 isCompleted: isYearCompleted(year)
                             ) {
-                                selectedContentType = .photos
-                                contentViewContentType = .photos
+                                selectedContentType = .photosAndVideos
+                                contentViewContentType = .photosAndVideos
                                 selectedFilter = .year(year)
                                 showingContentView = true
                             }
@@ -561,67 +708,33 @@ struct HomeView: View {
     // MARK: - Smart Cleanup Hub Card
     private var smartCleanupHubCard: some View {
         HStack(spacing: 16) {
-            // Icon with gradient background
-            ZStack {
-                LinearGradient(
-                    gradient: Gradient(colors: [.purple, .blue]),
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                
-                Image(systemName: "sparkles")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(.white)
-            }
+            premiumFeatureIcon(symbol: "sparkles", colors: [.purple, .blue])
             
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text("Smart Cleanup")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.primary)
-                    
-                    if let savings = formattedTotalSavings {
-                        Text(savings)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.green)
-                            .clipShape(Capsule())
-                    } else if isLoadingSmartModes {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .padding(.leading, 4)
-                    }
-                }
+                Text("Smart Cleanup")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.primary)
                 
                 Text(hasPremiumAccess ? "Bulk delete blurry, old & large files" : "Premium feature")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             
             Spacer()
+
+            if let savings = formattedTotalSavings {
+                compactCounterPill(savings)
+            } else if isLoadingSmartModes {
+                ProgressView()
+                    .scaleEffect(0.8)
+            }
             
             Image(systemName: "chevron.right")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.secondary)
         }
-        .padding(16)
-        .background(Color(.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(
-                    LinearGradient(
-                        gradient: Gradient(colors: [.purple.opacity(0.3), .blue.opacity(0.3)]),
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    ),
-                    lineWidth: 2
-                )
-        )
+        .modifier(PremiumFeatureRowModifier(strokeColors: [.purple.opacity(0.32), .blue.opacity(0.32)]))
     }
     
     private var formattedTotalSavings: String? {
@@ -634,19 +747,17 @@ struct HomeView: View {
         return formatter.string(fromByteCount: total)
     }
     
-    // Logic to determine if On This Day is completed
-    private var isOnThisDayDone: Bool {
-        guard !onThisDayPhotos.isEmpty else { return false }
-        
-        let processedIds = processedPhotoIds[.onThisDay] ?? []
-        // Check if all photos in onThisDayPhotos are present in processedIds
-        // We check if there are any photos that are NOT in processedIds
-        let remainingPhotos = onThisDayPhotos.filter { !processedIds.contains($0.localIdentifier) }
-        return remainingPhotos.isEmpty
+    private var allProcessedAssetIDs: Set<String> {
+        processedPhotoIds.values.reduce(into: Set<String>()) { result, ids in
+            result.formUnion(ids)
+        }
     }
     
-    private var hasOnThisDayPhotos: Bool {
-        return !onThisDayPhotos.isEmpty
+    private func isOnThisDayBucketDone(_ bucket: OnThisDayBucket) -> Bool {
+        guard bucket.totalCount > 0 else { return false }
+        guard !bucket.assetIdentifiers.isEmpty else { return false }
+        let processed = allProcessedAssetIDs
+        return bucket.assetIdentifiers.allSatisfy { processed.contains($0) }
     }
     
     // Check if all photos for a specific year have been processed
@@ -738,37 +849,27 @@ struct HomeView: View {
             showingTripBrowse = true
         }) {
             HStack(spacing: 16) {
-                Image(systemName: "airplane.departure")
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .frame(width: 50, height: 50)
-                    .background(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.teal, .blue]),
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                premiumFeatureIcon(symbol: "airplane.departure", colors: [.teal, .blue])
                 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Text("Holiday Mode")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundColor(.primary)
                         
                         Text("BETA")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
                             .background(Capsule().fill(Color.orange))
                     }
                     
                     Text("Sort by trips away from home")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 
                 Spacer()
                 
@@ -776,20 +877,7 @@ struct HomeView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.secondary)
             }
-            .padding(16)
-            .background(Color(.systemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.teal.opacity(0.3), .blue.opacity(0.3)]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        lineWidth: 2
-                    )
-            )
+            .modifier(PremiumFeatureRowModifier(strokeColors: [.teal.opacity(0.32), .blue.opacity(0.32)]))
         }
         .buttonStyle(PlainButtonStyle())
     }
@@ -803,81 +891,32 @@ struct HomeView: View {
             showingContentView = true
         }) {
             HStack(spacing: 16) {
-                Image(systemName: "video.badge.waveform")
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .frame(width: 50, height: 50)
-                    .background(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.pink, .purple]),
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                premiumFeatureIcon(symbol: "video.badge.waveform", colors: [.pink, .purple])
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Text("Reel Style")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.primary)
-                        
-                        newBadge
-                    }
+                    Text("Reel Style")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.primary)
                     
                     Text("Your short videos (≤10s) • TikTok-style")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 
                 Spacer()
                 
                 if shortVideoCount > 0 {
-                    Text("\(shortVideoCount)")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(.primary)
+                    compactCounterPill("\(shortVideoCount)")
                 }
                 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.secondary)
             }
-            .padding(16)
-            .background(Color(.systemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(
-                        LinearGradient(
-                            gradient: Gradient(colors: [.pink.opacity(0.3), .purple.opacity(0.3)]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        lineWidth: 2
-                    )
-            )
+            .modifier(PremiumFeatureRowModifier(strokeColors: [.pink.opacity(0.32), .purple.opacity(0.32)]))
         }
         .buttonStyle(PlainButtonStyle())
-    }
-
-    private var newBadge: some View {
-        Text("NEW")
-            .font(.system(size: 12, weight: .bold, design: .rounded))
-            .foregroundColor(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color.pink.opacity(0.9),
-                        Color.purple
-                    ]),
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .clipShape(Capsule())
-            .shadow(color: Color.purple.opacity(0.2), radius: 4, x: 0, y: 2)
     }
 
     
@@ -886,28 +925,18 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 12) {
             NavigationLink(destination: StreakAnalyticsView()) {
                 HStack(spacing: 16) {
-                    Image(systemName: "chart.bar.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .frame(width: 50, height: 50)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [.green, .mint]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    premiumFeatureIcon(symbol: "chart.bar.fill", colors: [.green, .mint])
                     
                     VStack(alignment: .leading, spacing: 4) {
                         Text("View Analytics")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundColor(.primary)
                         
                         Text("Track your cleaning progress and achievements")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     
                     Spacer()
                     
@@ -915,48 +944,25 @@ struct HomeView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.secondary)
                 }
-                .padding(16)
-                .background(Color(.systemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(
-                            LinearGradient(
-                                gradient: Gradient(colors: [.green.opacity(0.3), .mint.opacity(0.3)]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            lineWidth: 2
-                        )
-                )
+                .modifier(PremiumFeatureRowModifier(strokeColors: [.green.opacity(0.32), .mint.opacity(0.32)]))
             }
             .buttonStyle(PlainButtonStyle())
             
             // Widgets button
             Button(action: { showingWhatsNew = true }) {
                 HStack(spacing: 16) {
-                    Image(systemName: "square.grid.2x2.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .frame(width: 50, height: 50)
-                        .background(
-                            LinearGradient(
-                                gradient: Gradient(colors: [.indigo, .purple]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    premiumFeatureIcon(symbol: "square.grid.2x2.fill", colors: [.indigo, .purple])
                     
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Add Widgets")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundColor(.primary)
                         
                         Text("Put Kage on your home screen")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     
                     Spacer()
                     
@@ -964,23 +970,134 @@ struct HomeView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.secondary)
                 }
-                .padding(16)
-                .background(Color(.systemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(
-                            LinearGradient(
-                                gradient: Gradient(colors: [.indigo.opacity(0.3), .purple.opacity(0.3)]),
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            lineWidth: 2
-                        )
-                )
+                .modifier(PremiumFeatureRowModifier(strokeColors: [.indigo.opacity(0.32), .purple.opacity(0.32)]))
             }
             .buttonStyle(PlainButtonStyle())
         }
+    }
+    
+    // MARK: - Albums Section
+    private var albumCarouselSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("Albums")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.primary)
+                
+                if !hasPremiumAccess {
+                    Text("PREMIUM")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.orange))
+                }
+            }
+            .padding(.horizontal, 16)
+            
+            if isLoadingAlbums && albumSummaries.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Loading albums...")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 16)
+            } else if albumSummaries.isEmpty {
+                Text("No albums to show")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(albumSummaries) { album in
+                            AlbumCarouselCard(
+                                title: album.title,
+                                itemCount: album.itemCount,
+                                thumbnailAsset: album.coverAsset,
+                                isLocked: !hasPremiumAccess,
+                                isOpening: openingAlbumID == album.id
+                            ) {
+                                openAlbum(album)
+                            }
+                            .disabled(!hasPremiumAccess || openingAlbumID != nil)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+            
+            if !hasPremiumAccess {
+                Button(action: {
+                    showingOnThisDayHistoryPaywall = true
+                }) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "crown.fill")
+                            .font(.title2)
+                            .foregroundColor(.yellow)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Upgrade to Premium")
+                                .font(.headline)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                            
+                            Text("Unlock Albums • Unlimited swipes • No ads")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.9))
+                        }
+                        
+                        Spacer()
+                        
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [Color.purple, Color.blue]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: Color.purple.opacity(0.4), radius: 8, x: 0, y: 4)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    private func premiumFeatureIcon(symbol: String, colors: [Color]) -> some View {
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(colors: colors),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+        }
+    }
+    
+    private func compactCounterPill(_ value: String) -> some View {
+        Text(value)
+            .font(.system(size: 13, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .foregroundColor(.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.09))
+            .clipShape(Capsule())
     }
     
     // MARK: - Helper Functions
@@ -1021,6 +1138,16 @@ struct HomeView: View {
         
         // Load smart cleaning modes in background
         loadSmartCleaningModes()
+        
+        // Load utility card background thumbnails (non-blocking)
+        Task(priority: .utility) {
+            await loadUtilityCardBackgrounds()
+        }
+        
+        // Load album summaries for bottom carousel
+        Task(priority: .utility) {
+            await loadAlbumSummaries()
+        }
     }
     
     
@@ -1054,6 +1181,7 @@ struct HomeView: View {
             
             await loadStats()
             await loadCounts(forceReload: true) // Force reload counts to reflect deletions
+            await loadAlbumSummaries()
             
             // Refresh StreakManager stats to update photo counts and storage potential after deletions
             streakManager.refreshStats()
@@ -1073,12 +1201,14 @@ struct HomeView: View {
         async let countsTask: Void = loadCounts(forceReload: true) // Force reload counts
         async let onThisDayTask: Void = loadOnThisDayPhotos()
         async let yearsTask: Void = loadPhotoSummaryProgressively() // Reload years
+        async let albumsTask: Void = loadAlbumSummaries()
         
         await totalPhotoTask
         await statsTask
         await countsTask
         await onThisDayTask
         await yearsTask
+        await albumsTask
         
         // Refresh StreakManager stats
         await MainActor.run {
@@ -1127,8 +1257,13 @@ struct HomeView: View {
         
         // Enumerate all photos directly (more reliable than moment lists)
         let fetchOptions = PHFetchOptions()
+        fetchOptions.predicate = NSPredicate(
+            format: "mediaType = %d OR mediaType = %d",
+            PHAssetMediaType.image.rawValue,
+            PHAssetMediaType.video.rawValue
+        )
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        let assets = PHAsset.fetchAssets(with: fetchOptions)
         
         let totalCount = assets.count
         guard totalCount > 0 else { return }
@@ -1412,65 +1547,142 @@ struct HomeView: View {
         }
     }
 
-    private func loadOnThisDayPhotos() async {
-        let calendar = Calendar.current
-        let today = Date()
-        let month = calendar.component(.month, from: today)
-        let day = calendar.component(.day, from: today)
-        
-        let assets = await Task.detached(priority: .utility) { () -> [PHAsset] in
-            var result: [PHAsset] = []
+    private func buildOnThisDayBuckets(for daysAgoValues: [Int], referenceDate: Date) async -> [OnThisDayBucket] {
+        await Task.detached(priority: .utility) { () -> [OnThisDayBucket] in
             let calendar = Calendar.current
-            let currentYear = calendar.component(.year, from: today)
+            let currentYear = calendar.component(.year, from: referenceDate)
             let targetYears = (0..<12).compactMap { offset -> Int? in
                 let year = currentYear - offset
                 return year < currentYear ? year : nil
             }
             
-            for year in targetYears {
-                guard let startDate = calendar.date(from: DateComponents(year: year, month: month, day: day)),
-                      let endDate = calendar.date(byAdding: .day, value: 1, to: startDate) else { continue }
+            var buckets: [OnThisDayBucket] = []
+            
+            for daysAgo in daysAgoValues {
+                guard let targetDate = calendar.date(byAdding: .day, value: -daysAgo, to: referenceDate) else { continue }
+                let month = calendar.component(.month, from: targetDate)
+                let day = calendar.component(.day, from: targetDate)
                 
-                let options = PHFetchOptions()
-                options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                options.predicate = NSPredicate(
-                    format: "mediaType = %d AND creationDate >= %@ AND creationDate < %@",
-                    PHAssetMediaType.image.rawValue,
-                    startDate as NSDate,
-                    endDate as NSDate
-                )
+                var previewAssets: [PHAsset] = []
+                var totalCount = 0
+                var identifiers: [String] = []
                 
-                let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
-                fetchResult.enumerateObjects { asset, _, stop in
-                    self.prefetchBasicMetadata(for: asset)
-                    result.append(asset)
-                    if result.count >= 50 {
-                        stop.pointee = true
+                for year in targetYears {
+                    guard let startDate = calendar.date(from: DateComponents(year: year, month: month, day: day)),
+                          let endDate = calendar.date(byAdding: .day, value: 1, to: startDate) else { continue }
+                    
+                    let options = PHFetchOptions()
+                    options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                    options.predicate = NSPredicate(
+                        format: "(mediaType = %d OR mediaType = %d) AND creationDate >= %@ AND creationDate < %@",
+                        PHAssetMediaType.image.rawValue,
+                        PHAssetMediaType.video.rawValue,
+                        startDate as NSDate,
+                        endDate as NSDate
+                    )
+                    
+                    let fetchResult = PHAsset.fetchAssets(with: options)
+                    totalCount += fetchResult.count
+                    fetchResult.enumerateObjects { asset, _, _ in
+                        if previewAssets.count < 8 {
+                            self.prefetchBasicMetadata(for: asset)
+                            previewAssets.append(asset)
+                        }
+                        identifiers.append(asset.localIdentifier)
                     }
                 }
                 
-                if result.count >= 50 {
-                    break
-                }
+                buckets.append(
+                    OnThisDayBucket(
+                        daysAgo: daysAgo,
+                        date: targetDate,
+                        totalCount: totalCount,
+                        previewAssets: previewAssets,
+                        assetIdentifiers: identifiers,
+                        isLoaded: true
+                    )
+                )
             }
             
-            return result
+            return buckets.sorted { $0.daysAgo > $1.daysAgo }
         }.value
+    }
+    
+    private func loadOnThisDayPhotos() async {
+        let today = Date()
+        let skeletonBuckets = makeOnThisDaySkeletonBuckets(referenceDate: today)
         
-        let topAssets = Array(assets.prefix(20))
+        await MainActor.run {
+            self.isLoadingOnThisDay = true
+            if self.onThisDayBuckets.isEmpty {
+                self.onThisDayBuckets = skeletonBuckets
+                self.selectedOnThisDayPage = skeletonBuckets.firstIndex(where: { $0.daysAgo == 0 }) ?? max(skeletonBuckets.count - 1, 0)
+                self.hasOnThisDayHydrated = false
+            }
+        }
+
+        let todayBuckets = await buildOnThisDayBuckets(for: [0], referenceDate: today)
+        let todayBucket = todayBuckets.first
+        let todayAssets = todayBucket?.previewAssets ?? []
         let targetSize = CGSize(width: 60.0 * UIScreen.main.scale, height: 60.0 * UIScreen.main.scale)
         
         await MainActor.run {
             let previous = self.cachedOnThisDayAssets
-            self.cachedOnThisDayAssets = topAssets
-            self.onThisDayPhotos = topAssets
+            if let todayBucket {
+                self.onThisDayBuckets = self.replacingBucket(in: self.onThisDayBuckets, with: todayBucket)
+            }
+            self.selectedOnThisDayPage = self.onThisDayBuckets.firstIndex(where: { $0.daysAgo == 0 }) ?? max(self.onThisDayBuckets.count - 1, 0)
+            self.cachedOnThisDayAssets = todayAssets
+            self.onThisDayTotalCount = todayBucket?.totalCount ?? 0
+            self.onThisDayPhotos = todayAssets
             
             // Update widget with On This Day count and first photo
-            let firstPhotoID = topAssets.first?.localIdentifier
-            WidgetDataManager.shared.updateOnThisDayPhotos(count: topAssets.count, photoID: firstPhotoID)
+            let firstPhotoID = todayAssets.first?.localIdentifier
+            WidgetDataManager.shared.updateOnThisDayPhotos(count: todayBucket?.totalCount ?? 0, photoID: firstPhotoID)
             PhotoLibraryCache.shared.stopCaching(assets: previous, targetSize: targetSize)
-            PhotoLibraryCache.shared.startCaching(assets: topAssets, targetSize: targetSize)
+            PhotoLibraryCache.shared.startCaching(assets: todayAssets, targetSize: targetSize)
         }
+        
+        let historyBuckets = await buildOnThisDayBuckets(for: [1, 2, 3, 4, 5], referenceDate: today)
+        
+        await MainActor.run {
+            var updated = self.onThisDayBuckets
+            for bucket in historyBuckets {
+                updated = self.replacingBucket(in: updated, with: bucket)
+            }
+            self.onThisDayBuckets = updated
+            self.selectedOnThisDayPage = updated.firstIndex(where: { $0.daysAgo == 0 }) ?? max(updated.count - 1, 0)
+            withAnimation(.easeOut(duration: 0.2)) {
+                self.hasOnThisDayHydrated = true
+            }
+            self.isLoadingOnThisDay = false
+        }
+    }
+
+    private func makeOnThisDaySkeletonBuckets(referenceDate: Date) -> [OnThisDayBucket] {
+        let calendar = Calendar.current
+        return (0...5).compactMap { daysAgo -> OnThisDayBucket? in
+            guard let targetDate = calendar.date(byAdding: .day, value: -daysAgo, to: referenceDate) else { return nil }
+            return OnThisDayBucket(
+                daysAgo: daysAgo,
+                date: targetDate,
+                totalCount: 0,
+                previewAssets: [],
+                assetIdentifiers: [],
+                isLoaded: false
+            )
+        }
+        .sorted { $0.daysAgo > $1.daysAgo }
+    }
+
+    private func replacingBucket(in buckets: [OnThisDayBucket], with replacement: OnThisDayBucket) -> [OnThisDayBucket] {
+        var updated = buckets
+        if let index = updated.firstIndex(where: { $0.daysAgo == replacement.daysAgo }) {
+            updated[index] = replacement
+            return updated
+        }
+        updated.append(replacement)
+        return updated.sorted { $0.daysAgo > $1.daysAgo }
     }
     
     private func formatCurrentDate() -> String {
@@ -1494,6 +1706,216 @@ struct HomeView: View {
         }
         
         return dateString.replacingOccurrences(of: "\(day) ", with: "\(day)\(suffix) ")
+    }
+    
+    private func formatOnThisDayCardDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM"
+        return formatter.string(from: date)
+    }
+    
+    private func handleOnThisDayCardTap(_ bucket: OnThisDayBucket) {
+        let isLocked = bucket.daysAgo > 0 && !hasPremiumAccess
+        if isLocked {
+            showingOnThisDayHistoryPaywall = true
+            return
+        }
+        
+        selectedContentType = .photosAndVideos
+        contentViewContentType = .photosAndVideos
+        
+        if bucket.daysAgo == 0 {
+            selectedFilter = .onThisDay
+        } else if !bucket.assetIdentifiers.isEmpty {
+            selectedFilter = .trip(bucket.assetIdentifiers)
+        } else {
+            return
+        }
+        
+        showingContentView = true
+    }
+    
+    private func prewarmHolidayModeIfNeeded() {
+        guard !hasPrewarmedHolidayModeScan else { return }
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+        
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return }
+        
+        Task(priority: .background) {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            await MainActor.run {
+                TripDetectionService.shared.scanForTrips(priority: .utility, showProgressUI: false)
+                hasPrewarmedHolidayModeScan = true
+            }
+        }
+    }
+    
+    private func loadUtilityCardBackgrounds() async {
+        let targetSize = CGSize(width: 320 * UIScreen.main.scale, height: 240 * UIScreen.main.scale)
+        
+        async let shuffleImage = loadRandomUtilityBackground(for: .shuffle, targetSize: targetSize)
+        async let favoritesImage = loadRandomUtilityBackground(for: .favorites, targetSize: targetSize)
+        async let screenshotsImage = loadRandomUtilityBackground(for: .screenshots, targetSize: targetSize)
+        async let videosImage = loadRandomUtilityBackground(for: .videos, targetSize: targetSize)
+        
+        let images = await [
+            "shuffle": shuffleImage,
+            "favorites": favoritesImage,
+            "screenshots": screenshotsImage,
+            "videos": videosImage
+        ]
+        
+        await MainActor.run {
+            self.utilityCardBackgrounds = images.compactMapValues { $0 }
+        }
+    }
+    
+    private enum UtilityBackgroundType {
+        case shuffle
+        case favorites
+        case screenshots
+        case videos
+    }
+    
+    private func loadRandomUtilityBackground(for type: UtilityBackgroundType, targetSize: CGSize) async -> UIImage? {
+        let randomAsset = await Task.detached(priority: .utility) { () -> PHAsset? in
+            let options = PHFetchOptions()
+            options.includeHiddenAssets = false
+            
+            switch type {
+            case .shuffle:
+                let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
+                guard fetchResult.count > 0 else { return nil }
+                return fetchResult.object(at: Int.random(in: 0..<fetchResult.count))
+            case .favorites:
+                options.predicate = NSPredicate(format: "isFavorite == YES")
+                let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
+                guard fetchResult.count > 0 else { return nil }
+                return fetchResult.object(at: Int.random(in: 0..<fetchResult.count))
+            case .screenshots:
+                options.predicate = NSPredicate(format: "(mediaSubtypes & %d) != 0", PHAssetMediaSubtype.photoScreenshot.rawValue)
+                let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
+                guard fetchResult.count > 0 else { return nil }
+                return fetchResult.object(at: Int.random(in: 0..<fetchResult.count))
+            case .videos:
+                let fetchResult = PHAsset.fetchAssets(with: .video, options: options)
+                guard fetchResult.count > 0 else { return nil }
+                return fetchResult.object(at: Int.random(in: 0..<fetchResult.count))
+            }
+        }.value
+        
+        guard let randomAsset else { return nil }
+        return await requestUtilityThumbnail(for: randomAsset, targetSize: targetSize)
+    }
+    
+    private func requestUtilityThumbnail(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
+        await withCheckedContinuation { continuation in
+            let options = PHImageRequestOptions()
+            options.isSynchronous = false
+            options.deliveryMode = .fastFormat
+            options.resizeMode = .fast
+            options.isNetworkAccessAllowed = false
+            
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: options
+            ) { image, _ in
+                continuation.resume(returning: image)
+            }
+        }
+    }
+    
+    private func loadAlbumSummaries() async {
+        await MainActor.run {
+            self.isLoadingAlbums = true
+        }
+        
+        let summaries = await Task.detached(priority: .utility) { () -> [AlbumSummary] in
+            let fetchResult = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+            var results: [AlbumSummary] = []
+            
+            let assetOptions = PHFetchOptions()
+            assetOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            assetOptions.predicate = NSPredicate(
+                format: "mediaType = %d OR mediaType = %d",
+                PHAssetMediaType.image.rawValue,
+                PHAssetMediaType.video.rawValue
+            )
+            
+            fetchResult.enumerateObjects { collection, _, stop in
+                let assets = PHAsset.fetchAssets(in: collection, options: assetOptions)
+                let count = assets.count
+                guard count > 0 else { return }
+                
+                let title = collection.localizedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let displayTitle = (title?.isEmpty == false ? title! : "Untitled Album")
+                
+                results.append(
+                    AlbumSummary(
+                        id: collection.localIdentifier,
+                        title: displayTitle,
+                        itemCount: count,
+                        coverAsset: assets.firstObject
+                    )
+                )
+                
+                if results.count >= 20 {
+                    stop.pointee = true
+                }
+            }
+            
+            return results
+        }.value
+        
+        await MainActor.run {
+            self.albumSummaries = summaries
+            self.isLoadingAlbums = false
+        }
+    }
+    
+    private func openAlbum(_ album: AlbumSummary) {
+        guard hasPremiumAccess else {
+            showingOnThisDayHistoryPaywall = true
+            return
+        }
+        guard openingAlbumID == nil else { return }
+        
+        openingAlbumID = album.id
+        
+        Task(priority: .userInitiated) {
+            let identifiers = await Task.detached(priority: .userInitiated) { () -> [String] in
+                let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [album.id], options: nil)
+                guard let collection = collections.firstObject else { return [] }
+                
+                let options = PHFetchOptions()
+                options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                options.predicate = NSPredicate(
+                    format: "mediaType = %d OR mediaType = %d",
+                    PHAssetMediaType.image.rawValue,
+                    PHAssetMediaType.video.rawValue
+                )
+                
+                let assets = PHAsset.fetchAssets(in: collection, options: options)
+                var ids: [String] = []
+                ids.reserveCapacity(assets.count)
+                assets.enumerateObjects { asset, _, _ in
+                    ids.append(asset.localIdentifier)
+                }
+                return ids
+            }.value
+            
+            await MainActor.run {
+                self.openingAlbumID = nil
+                guard !identifiers.isEmpty else { return }
+                self.selectedContentType = .photosAndVideos
+                self.contentViewContentType = .photosAndVideos
+                self.selectedFilter = .trip(identifiers)
+                self.showingContentView = true
+            }
+        }
     }
     
     // MARK: - Post-Onboarding Offer
@@ -1554,6 +1976,32 @@ struct HomeView: View {
             UserDefaults.standard.set(true, forKey: "hasShownPostOnboardingOffer")
         }
     }
+    
+}
+
+private struct PremiumFeatureRowModifier: ViewModifier {
+    let strokeColors: [Color]
+    
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(.systemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            gradient: Gradient(colors: strokeColors),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        lineWidth: 1.5
+                    )
+            )
+    }
 }
 
 // MARK: - Supporting Views
@@ -1593,6 +2041,8 @@ struct UtilityCard: View {
     let count: Int
     let countLabel: LocalizedStringKey?
     let color: Color
+    let borderColor: Color
+    let backgroundImage: UIImage?
     let isLoading: Bool
     let action: () -> Void
     
@@ -1642,11 +2092,27 @@ struct UtilityCard: View {
             }
             .padding(16)
             .frame(height: 120)
-            .background(Color(.systemBackground))
+            .background(
+                ZStack {
+                    Color(.systemBackground)
+                    
+                    if let backgroundImage {
+                        Image(uiImage: backgroundImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .blur(radius: 5.5)
+                            .opacity(0.30)
+                        
+                        Color.black.opacity(0.06)
+                    }
+                }
+            )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color(.systemGray5), lineWidth: 1)
+                    .stroke(borderColor.opacity(0.68), lineWidth: 2.2)
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -1792,6 +2258,9 @@ struct OnThisDayCard: View {
 
 struct OnThisDayThumbnail: View {
     let asset: PHAsset
+    var size: CGFloat = 60
+    var showVideoBadge: Bool = true
+    var cornerRadius: CGFloat = 7
     @State private var image: UIImage?
     
     var body: some View {
@@ -1800,17 +2269,28 @@ struct OnThisDayThumbnail: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 60, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             } else {
                 Rectangle()
                     .fill(Color(.systemGray5))
-                    .frame(width: 60, height: 60)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                     .overlay(
                         ProgressView()
                             .scaleEffect(0.5)
                     )
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if showVideoBadge && asset.mediaType == .video {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(4)
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Circle())
+                    .padding(3)
             }
         }
         .task(id: asset.localIdentifier) {
@@ -1821,7 +2301,7 @@ struct OnThisDayThumbnail: View {
     private func loadThumbnail() async {
         guard image == nil else { return }
         
-        let targetSize = CGSize(width: 60.0 * UIScreen.main.scale, height: 60.0 * UIScreen.main.scale)
+        let targetSize = CGSize(width: size * UIScreen.main.scale, height: size * UIScreen.main.scale)
         if let fetchedImage = await PhotoLibraryCache.shared.requestThumbnail(for: asset, targetSize: targetSize) {
             await MainActor.run {
                 self.image = fetchedImage
@@ -1946,13 +2426,536 @@ struct YearCard: View {
     
     private func formatPhotoCount(_ count: Int) -> String {
         if count >= 10000 {
-            return "\(count / 1000)K photos"
+            return "\(count / 1000)K items"
         } else if count >= 1000 {
             let thousands = Double(count) / 1000.0
-            return String(format: "%.1fK photos", thousands)
+            return String(format: "%.1fK items", thousands)
         } else {
-            return "\(count) photos"
+            return "\(count) items"
         }
+    }
+}
+
+struct AlbumCarouselCard: View {
+    let title: String
+    let itemCount: Int
+    let thumbnailAsset: PHAsset?
+    let isLocked: Bool
+    let isOpening: Bool
+    let action: () -> Void
+    
+    @State private var thumbnailImage: UIImage?
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack(alignment: .topTrailing) {
+                    Group {
+                        if let image = thumbnailImage {
+                            Image(uiImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            LinearGradient(
+                                gradient: Gradient(colors: [Color.blue.opacity(0.35), Color.green.opacity(0.30)]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        }
+                    }
+                    .frame(width: 145, height: 96)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    
+                    if isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(7)
+                            .background(Circle().fill(Color.black.opacity(0.62)))
+                            .padding(8)
+                    }
+                }
+                
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                
+                Text("\(itemCount) items")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .padding(10)
+            .frame(width: 160, alignment: .leading)
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.green.opacity(0.35), lineWidth: 1.6)
+            )
+            .overlay {
+                if isLocked {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.black.opacity(0.14))
+                } else if isOpening {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.black.opacity(0.20))
+                        .overlay(
+                            ProgressView()
+                                .tint(.white)
+                        )
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .task(id: thumbnailAsset?.localIdentifier) {
+            await loadThumbnail()
+        }
+    }
+    
+    private func loadThumbnail() async {
+        guard let asset = thumbnailAsset, thumbnailImage == nil else { return }
+        let targetSize = CGSize(width: 220, height: 160)
+        if let fetchedImage = await PhotoLibraryCache.shared.requestThumbnail(for: asset, targetSize: targetSize) {
+            await MainActor.run {
+                self.thumbnailImage = fetchedImage
+            }
+        }
+    }
+}
+
+struct InviteFriendsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var purchaseManager: PurchaseManager
+    
+    @AppStorage("inviteShareCount") private var inviteShareCount = 0
+    @AppStorage("invitePremiumUnlockedAt") private var invitePremiumUnlockedAt: Double = 0
+    @AppStorage("invitePremiumClaimRequestedAt") private var invitePremiumClaimRequestedAt: Double = 0
+    @AppStorage("invitePremiumClaimID") private var invitePremiumClaimID: String = ""
+    
+    @State private var showingShareSheet = false
+    @State private var showingClaimMailComposer = false
+    @State private var shareItems: [Any] = []
+    @State private var activeAlert: InviteAlert?
+    @State private var pendingClaimID: String = ""
+    
+    private let appStoreURLString = "https://apps.apple.com/gb/app/photo-cleaner-kage/id6748860038"
+    private let inviteMessage = "Hello Friend - enjoy my gift of a clean camera roll."
+    private let swipeRewardPerInvite = 500
+    private let premiumUnlockThreshold = 3
+    
+    private var hasUnlockedPremiumReward: Bool {
+        inviteShareCount >= premiumUnlockThreshold
+    }
+    
+    private var invitesUntilPremium: Int {
+        max(0, premiumUnlockThreshold - inviteShareCount)
+    }
+    
+    private var hasRequestedPremiumClaim: Bool {
+        invitePremiumClaimRequestedAt > 0
+    }
+    
+    var body: some View {
+        NavigationView {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Invite friends")
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                        
+                        Text("Share Kage with friends and unlock rewards.")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(.white.opacity(0.82))
+                    }
+                    
+                    HStack(alignment: .bottom, spacing: 8) {
+                        Text("\(inviteShareCount)")
+                            .font(.system(size: 42, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
+                        Text("successful invites")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.82))
+                            .padding(.bottom, 6)
+                    }
+                    .padding(.top, 4)
+                    
+                    VStack(spacing: 10) {
+                        InviteRewardRow(
+                            title: "+\(swipeRewardPerInvite) swipes",
+                            subtitle: "for every completed share",
+                            isUnlocked: inviteShareCount > 0
+                        )
+                        
+                        InviteRewardRow(
+                            title: "1 month premium",
+                            subtitle: hasUnlockedPremiumReward ? "unlocked" : "unlock at 3 invites (\(invitesUntilPremium) to go)",
+                            isUnlocked: hasUnlockedPremiumReward
+                        )
+                    }
+                    
+                    Button(action: startShareFlow) {
+                        Label("Invite friends", systemImage: "paperplane.fill")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundColor(.black)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            gradient: Gradient(colors: [Color.green.opacity(0.95), Color.mint]),
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
+                    
+                    if hasUnlockedPremiumReward {
+                        Button(action: claimFreeMonthByEmail) {
+                            Label(hasRequestedPremiumClaim ? "Claim email sent" : "Claim free month", systemImage: "envelope.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 52)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill(hasRequestedPremiumClaim ? Color.green.opacity(0.22) : Color.white.opacity(0.12))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(Color.green.opacity(0.65), lineWidth: 1.2)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(hasRequestedPremiumClaim)
+                        
+                        Text(hasRequestedPremiumClaim
+                             ? "Thanks. We will email your 1-month code manually."
+                             : "This opens your email app with a prefilled claim message to support.")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.75))
+                        
+                        Text("Claim ID: \(displayClaimID)")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.green.opacity(0.9))
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
+            }
+            .background(
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color(red: 0.09, green: 0.10, blue: 0.15),
+                        Color(red: 0.04, green: 0.05, blue: 0.08),
+                        Color.black
+                    ]),
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+            )
+            .navigationTitle("")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(.white)
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheet(activityItems: shareItems, onComplete: handleShareCompletion)
+        }
+        .sheet(isPresented: $showingClaimMailComposer) {
+            MailComposerView(
+                subject: claimEmailSubject(claimID: pendingClaimID),
+                recipients: [AppConfig.supportEmail],
+                body: claimEmailBody(claimID: pendingClaimID)
+            ) { result in
+                handleClaimMailResult(result)
+            }
+        }
+        .alert(item: $activeAlert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+        .onAppear {
+            prewarmInviteFlowIfNeeded()
+        }
+    }
+    
+    private func startShareFlow() {
+        guard let appStoreURL = URL(string: appStoreURLString) else { return }
+        shareItems = [InviteShareItemSource(message: inviteMessage, url: appStoreURL)]
+        showingShareSheet = true
+    }
+    
+    private func handleShareCompletion(_ completed: Bool, _ activityType: UIActivity.ActivityType?) {
+        guard completed else { return }
+        guard activityType != .copyToPasteboard else {
+            activeAlert = InviteAlert(
+                title: "Invite not counted",
+                message: "Copying the link does not count as an invite. Share via Messages, WhatsApp, Mail, etc."
+            )
+            return
+        }
+        
+        inviteShareCount += 1
+        purchaseManager.grantRewardedSwipes(swipeRewardPerInvite)
+        activeAlert = InviteAlert(
+            title: "Reward added",
+            message: "+\(swipeRewardPerInvite) swipes added."
+        )
+        
+        if hasUnlockedPremiumReward && invitePremiumUnlockedAt == 0 {
+            invitePremiumUnlockedAt = Date().timeIntervalSince1970
+            activeAlert = InviteAlert(
+                title: "1 month premium unlocked",
+                message: "Tap Claim free month to send a prefilled email to support."
+            )
+        }
+    }
+    
+    private func claimFreeMonthByEmail() {
+        let claimID = resolvedClaimID()
+        pendingClaimID = claimID
+        if MFMailComposeViewController.canSendMail() {
+            showingClaimMailComposer = true
+        } else {
+            openClaimMailFallback(claimID: claimID)
+        }
+    }
+    
+    private func handleClaimMailResult(_ result: Result<MFMailComposeResult, Error>) {
+        switch result {
+        case .success(let composeResult):
+            switch composeResult {
+            case .sent:
+                invitePremiumClaimRequestedAt = Date().timeIntervalSince1970
+                activeAlert = InviteAlert(
+                    title: "Claim sent",
+                    message: "Thanks. We received your claim request and will send your 1-month code manually."
+                )
+            case .cancelled:
+                activeAlert = InviteAlert(
+                    title: "Claim not sent",
+                    message: "Your email was cancelled."
+                )
+            case .saved:
+                activeAlert = InviteAlert(
+                    title: "Draft saved",
+                    message: "Your claim email was saved as a draft."
+                )
+            case .failed:
+                activeAlert = InviteAlert(
+                    title: "Send failed",
+                    message: "Please try again or email \(AppConfig.supportEmail) manually."
+                )
+            @unknown default:
+                activeAlert = InviteAlert(
+                    title: "Unknown mail status",
+                    message: "Please check your Mail app or email \(AppConfig.supportEmail)."
+                )
+            }
+        case .failure:
+            activeAlert = InviteAlert(
+                title: "Send failed",
+                message: "Please try again or email \(AppConfig.supportEmail) manually."
+            )
+        }
+    }
+    
+    private func resolvedClaimID() -> String {
+        if !invitePremiumClaimID.isEmpty {
+            return invitePremiumClaimID
+        }
+        
+        let timestamp = Int((invitePremiumUnlockedAt > 0 ? invitePremiumUnlockedAt : Date().timeIntervalSince1970))
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(6).uppercased()
+        let claimID = "KAGE-\(timestamp)-\(inviteShareCount)-\(suffix)"
+        invitePremiumClaimID = claimID
+        return claimID
+    }
+    
+    private var displayClaimID: String {
+        if invitePremiumClaimID.isEmpty {
+            return "Generated when you tap Claim free month"
+        }
+        return invitePremiumClaimID
+    }
+    
+    private func claimEmailSubject(claimID: String) -> String {
+        "Kage invite reward claim - 1 month free [\(claimID)]"
+    }
+    
+    private func claimEmailBody(claimID: String) -> String {
+        let claimDate = Date()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        
+        return """
+        Hi Kage support,
+        
+        I'd like to claim my 1-month premium invite reward.
+        
+        Here's my claim ID to track completion: \(claimID)
+        
+        Invite count: \(inviteShareCount)
+        Claim date: \(formatter.string(from: claimDate))
+        App ID: \(AppConfig.appStoreID)
+        
+        Please send my 1-month promo code.
+        
+        Thanks!
+        """
+    }
+    
+    private func openClaimMailFallback(claimID: String) {
+        let subject = claimEmailSubject(claimID: claimID)
+        let body = claimEmailBody(claimID: claimID)
+        
+        let subjectItem = URLQueryItem(name: "subject", value: subject)
+        let bodyItem = URLQueryItem(name: "body", value: body)
+        
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "dummy"
+        components.queryItems = [subjectItem, bodyItem]
+        
+        guard let encoded = components.url?.query,
+              let mailtoURL = URL(string: "mailto:\(AppConfig.supportEmail)?\(encoded)") else {
+            activeAlert = InviteAlert(
+                title: "Could not open email",
+                message: "Please email \(AppConfig.supportEmail) with claim ID \(claimID)."
+            )
+            return
+        }
+        
+        UIApplication.shared.open(mailtoURL, options: [:]) { success in
+            if success {
+                activeAlert = InviteAlert(
+                    title: "Mail app opened",
+                    message: "After sending, we will process claim ID \(claimID)."
+                )
+            } else {
+                activeAlert = InviteAlert(
+                    title: "Could not open email",
+                    message: "Please email \(AppConfig.supportEmail) with claim ID \(claimID)."
+                )
+            }
+        }
+    }
+    
+    private func prewarmInviteFlowIfNeeded() {
+        guard !Self.didPrewarmInviteFlow else { return }
+        Self.didPrewarmInviteFlow = true
+        
+        DispatchQueue.global(qos: .utility).async {
+            if #available(iOS 13.0, *) {
+                let _ = LPLinkMetadata()
+            }
+            _ = MFMailComposeViewController.canSendMail()
+        }
+    }
+    
+    private static var didPrewarmInviteFlow = false
+    
+    private struct InviteAlert: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+}
+
+private final class InviteShareItemSource: NSObject, UIActivityItemSource {
+    private let message: String
+    private let url: URL
+    
+    init(message: String, url: URL) {
+        self.message = message
+        self.url = url
+        super.init()
+    }
+    
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        "\(message)\n\(url.absoluteString)"
+    }
+    
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        itemForActivityType activityType: UIActivity.ActivityType?
+    ) -> Any? {
+        "\(message)\n\(url.absoluteString)"
+    }
+    
+    func activityViewController(
+        _ activityViewController: UIActivityViewController,
+        subjectForActivityType activityType: UIActivity.ActivityType?
+    ) -> String {
+        "Photo Cleaner Kage Invite"
+    }
+    
+    @available(iOS 13.0, *)
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        let metadata = LPLinkMetadata()
+        metadata.title = message
+        metadata.originalURL = url
+        metadata.url = url
+        
+        if let icon = UIImage(systemName: "gift.fill") {
+            metadata.iconProvider = NSItemProvider(object: icon)
+        }
+        
+        if let image = UIImage(named: "kage-purple-gradient-text") {
+            metadata.imageProvider = NSItemProvider(object: image)
+        }
+        
+        return metadata
+    }
+}
+
+private struct InviteRewardRow: View {
+    let title: String
+    let subtitle: String
+    let isUnlocked: Bool
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: isUnlocked ? "checkmark.seal.fill" : "gift.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(isUnlocked ? .green : .white.opacity(0.9))
+                .frame(width: 28, height: 28)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white.opacity(0.72))
+            }
+            
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isUnlocked ? Color.green.opacity(0.8) : Color.white.opacity(0.14), lineWidth: 1)
+        )
     }
 }
 

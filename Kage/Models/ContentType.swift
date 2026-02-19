@@ -135,6 +135,7 @@ enum OnboardingStep {
     case socialProof
     case freeTrialIntro
     case permissions
+    case widgetShowcase
     case finalContinue
 }
 

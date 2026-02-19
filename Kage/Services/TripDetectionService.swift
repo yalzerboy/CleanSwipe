@@ -74,8 +74,15 @@ class TripDetectionService: ObservableObject {
     
     // Persistent cache key
     private let geoCacheKey = "com.kage.tripGeoCache"
+    private let scanCheckpointProgressKey = "com.kage.tripScanCheckpoint.progress"
+    private let scanCheckpointMessageKey = "com.kage.tripScanCheckpoint.message"
+    private let scanCheckpointTimestampKey = "com.kage.tripScanCheckpoint.timestamp"
+    private let scanCheckpointTTL: TimeInterval = 60 * 20
+    private var scanTask: Task<Void, Never>?
     
-    private init() {}
+    private init() {
+        restoreCheckpointIfFresh()
+    }
     
     // MARK: - Persistent Geocode Cache
     
@@ -87,32 +94,53 @@ class TripDetectionService: ObservableObject {
         UserDefaults.standard.set(cache, forKey: geoCacheKey)
     }
     
-    func scanForTrips() {
-        guard !isScanning else { return }
+    func scanForTrips(priority: TaskPriority = .utility, showProgressUI: Bool = true) {
+        guard !isScanning, !hasScanned else { return }
         isScanning = true
-        scanProgress = 0.0
-        scanMessage = "One-time scan — finding all your holidays..."
         
-        Task(priority: .userInitiated) {
-            await performScan()
+        if let checkpoint = loadCheckpoint(), checkpoint.progress > 0, checkpoint.progress < 1 {
+            scanProgress = checkpoint.progress
+            scanMessage = checkpoint.message.isEmpty
+                ? (showProgressUI ? "Resuming holiday scan..." : "")
+                : checkpoint.message
+        } else {
+            scanProgress = 0.0
+            scanMessage = showProgressUI ? "One-time scan — finding all your holidays..." : ""
+        }
+        persistCheckpoint(progress: scanProgress, message: scanMessage)
+        
+        scanTask = Task(priority: priority) { [weak self] in
+            guard let self else { return }
+            await self.performScan(priority: priority)
         }
     }
     
     func rescan() {
+        cancelScan()
         hasScanned = false
         trips = []
         scanForTrips()
     }
     
+    func cancelScan() {
+        scanTask?.cancel()
+        scanTask = nil
+        isScanning = false
+        scanMessage = ""
+        clearCheckpoint()
+    }
+    
     // MARK: - Core Algorithm
     
-    private func performScan() async {
+    private func performScan(priority: TaskPriority) async {
         // Step 1: Fetch all geotagged photos sorted by date
         let fetchOptions = PHFetchOptions()
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
         fetchOptions.includeHiddenAssets = false
         
-        let allAssets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        let allAssets = await Task.detached(priority: priority) {
+            PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        }.value
         let totalCount = allAssets.count
         
         guard totalCount > 0 else {
@@ -120,12 +148,15 @@ class TripDetectionService: ObservableObject {
                 self.isScanning = false
                 self.hasScanned = true
                 self.scanMessage = "No photos found"
+                self.scanTask = nil
+                self.clearCheckpoint()
             }
             return
         }
         
         await MainActor.run {
             self.scanMessage = "Scanning your photo library..."
+            self.persistCheckpoint(progress: self.scanProgress, message: self.scanMessage)
         }
         
         // Step 2: Extract geotagged photos — run on background thread
@@ -134,12 +165,13 @@ class TripDetectionService: ObservableObject {
         let minPhotos = minTripPhotos
         let homeRadius = homeRadiusKm
         
-        let scanResult: (tripClusters: [[PhotoPoint]], allClusters: [[PhotoPoint]])? = await Task.detached(priority: .userInitiated) {
+        let scanResult: (tripClusters: [[PhotoPoint]], allClusters: [[PhotoPoint]])? = await Task.detached(priority: priority) {
             // Heavy work: iterate entire photo library (off main thread)
             var points: [PhotoPoint] = []
             points.reserveCapacity(totalCount / 2)
             
             for i in 0..<totalCount {
+                if Task.isCancelled { return nil }
                 let asset = allAssets.object(at: i)
                 if let location = asset.location,
                    let date = asset.creationDate,
@@ -153,11 +185,13 @@ class TripDetectionService: ObservableObject {
                 }
                 
                 // Update progress less frequently to reduce main thread hops
-                if i % 2000 == 0 {
+                if i % 4000 == 0 {
                     let progress = Double(i) / Double(totalCount) * 0.4
                     await MainActor.run {
                         TripDetectionService.shared.scanProgress = progress
+                        TripDetectionService.shared.persistCheckpoint(progress: progress, message: TripDetectionService.shared.scanMessage)
                     }
+                    await Task.yield()
                 }
             }
             
@@ -180,6 +214,7 @@ class TripDetectionService: ObservableObject {
             var currentCluster: [PhotoPoint] = [points[0]]
             
             for i in 1..<points.count {
+                if Task.isCancelled { return nil }
                 let prev = currentCluster.last!
                 let curr = points[i]
                 
@@ -191,6 +226,10 @@ class TripDetectionService: ObservableObject {
                 } else {
                     clusters.append(currentCluster)
                     currentCluster = [curr]
+                }
+                
+                if i % 5000 == 0 {
+                    await Task.yield()
                 }
             }
             clusters.append(currentCluster)
@@ -237,12 +276,21 @@ class TripDetectionService: ObservableObject {
             return (tripClusters: tripClusters, allClusters: clusters)
         }.value
         
-        guard let result = scanResult else { return }
+        guard let result = scanResult else {
+            await MainActor.run {
+                self.isScanning = false
+                self.scanMessage = ""
+                self.scanTask = nil
+                self.persistCheckpoint(progress: self.scanProgress, message: self.scanMessage)
+            }
+            return
+        }
         let tripClusters = result.tripClusters
         
         await MainActor.run {
             self.scanProgress = 0.6
             self.scanMessage = "Naming \(tripClusters.count) holidays..."
+            self.persistCheckpoint(progress: self.scanProgress, message: self.scanMessage)
         }
         
         // Step 6: Deduplicate geocoding by coarse location
@@ -271,10 +319,19 @@ class TripDetectionService: ObservableObject {
             } else {
                 self.scanMessage = "Identifying \(uncachedKeys.count) locations..."
             }
+            self.persistCheckpoint(progress: self.scanProgress, message: self.scanMessage)
         }
         
         // Geocode only unique, uncached locations
         for (idx, key) in uncachedKeys.enumerated() {
+            if Task.isCancelled {
+                await MainActor.run {
+                    self.isScanning = false
+                    self.scanMessage = ""
+                    self.scanTask = nil
+                }
+                return
+            }
             guard let location = uniqueLocations[key] else { continue }
             
             let name = await geocodeSingle(location: location)
@@ -283,6 +340,7 @@ class TripDetectionService: ObservableObject {
             // Smooth fake progress from 0.6 → 0.95
             await MainActor.run {
                 self.scanProgress = 0.6 + 0.35 * Double(idx + 1) / Double(uncachedKeys.count)
+                self.persistCheckpoint(progress: self.scanProgress, message: self.scanMessage)
             }
         }
         
@@ -293,6 +351,14 @@ class TripDetectionService: ObservableObject {
         var detectedTrips: [Trip] = []
         
         for (index, cluster) in tripClusters.enumerated() {
+            if Task.isCancelled {
+                await MainActor.run {
+                    self.isScanning = false
+                    self.scanMessage = ""
+                    self.scanTask = nil
+                }
+                return
+            }
             let center = clusterCenter(of: cluster)
             let cacheKey = tripCacheKeys[index]
             var name = geoCache[cacheKey] ?? "Unknown Location"
@@ -332,6 +398,8 @@ class TripDetectionService: ObservableObject {
             self.hasScanned = true
             self.scanProgress = 1.0
             self.scanMessage = ""
+            self.scanTask = nil
+            self.clearCheckpoint()
         }
     }
     
@@ -398,5 +466,45 @@ class TripDetectionService: ObservableObject {
                 continuation.resume(returning: name)
             }
         }
+    }
+    
+    // MARK: - Scan Checkpoint
+    
+    private struct ScanCheckpoint {
+        let progress: Double
+        let message: String
+        let timestamp: TimeInterval
+    }
+    
+    private func persistCheckpoint(progress: Double, message: String) {
+        UserDefaults.standard.set(progress, forKey: scanCheckpointProgressKey)
+        UserDefaults.standard.set(message, forKey: scanCheckpointMessageKey)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: scanCheckpointTimestampKey)
+    }
+    
+    private func loadCheckpoint() -> ScanCheckpoint? {
+        let timestamp = UserDefaults.standard.double(forKey: scanCheckpointTimestampKey)
+        guard timestamp > 0 else { return nil }
+        let age = Date().timeIntervalSince1970 - timestamp
+        guard age <= scanCheckpointTTL else { return nil }
+        
+        let progress = UserDefaults.standard.double(forKey: scanCheckpointProgressKey)
+        let message = UserDefaults.standard.string(forKey: scanCheckpointMessageKey) ?? ""
+        return ScanCheckpoint(progress: progress, message: message, timestamp: timestamp)
+    }
+    
+    private func restoreCheckpointIfFresh() {
+        guard let checkpoint = loadCheckpoint() else {
+            clearCheckpoint()
+            return
+        }
+        self.scanProgress = checkpoint.progress
+        self.scanMessage = checkpoint.message
+    }
+    
+    private func clearCheckpoint() {
+        UserDefaults.standard.removeObject(forKey: scanCheckpointProgressKey)
+        UserDefaults.standard.removeObject(forKey: scanCheckpointMessageKey)
+        UserDefaults.standard.removeObject(forKey: scanCheckpointTimestampKey)
     }
 }

@@ -89,11 +89,15 @@ struct OnThisDayWidgetView: View {
     let entry: KageWidgetEntry
     @State private var thumbnailImage: UIImage?
     
+    private var hasOnThisDayItems: Bool {
+        entry.data.onThisDayCount > 0
+    }
+    
     var body: some View {
         HStack(spacing: 16) {
             // Left: Photo thumbnail
             ZStack {
-                if let image = thumbnailImage {
+                if hasOnThisDayItems, let image = thumbnailImage {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -120,6 +124,13 @@ struct OnThisDayWidgetView: View {
             .onAppear {
                 loadThumbnail()
             }
+            .onChange(of: entry.data.onThisDayCount) { _, newCount in
+                if newCount == 0 {
+                    thumbnailImage = nil
+                } else {
+                    loadThumbnail()
+                }
+            }
             
             // Right: Info
             VStack(alignment: .leading, spacing: 8) {
@@ -131,22 +142,22 @@ struct OnThisDayWidgetView: View {
                         .font(.system(size: 14, weight: .bold))
                 }
                 
-                if entry.data.onThisDayCount > 0 {
+                if hasOnThisDayItems {
                     Text("\(entry.data.onThisDayCount)")
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .foregroundStyle(
                             LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing)
                         )
                     
-                    Text(entry.data.onThisDayCount == 1 ? "photo" : "photos")
+                    Text(entry.data.onThisDayCount == 1 ? "item" : "items")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                 } else {
-                    Text("No photos")
+                    Text("No items today")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(.secondary)
                     
-                    Text("from this day")
+                    Text("Check back tomorrow")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary.opacity(0.7))
                 }
@@ -167,7 +178,10 @@ struct OnThisDayWidgetView: View {
     }
     
     private func loadThumbnail() {
-        guard let photoID = entry.data.onThisDayPhotoID else { return }
+        guard hasOnThisDayItems, let photoID = entry.data.onThisDayPhotoID else {
+            thumbnailImage = nil
+            return
+        }
         
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [photoID], options: nil)
         guard let asset = fetchResult.firstObject else { return }

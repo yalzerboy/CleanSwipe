@@ -13,7 +13,6 @@ import Photos
 struct TripBrowseView: View {
     @StateObject private var tripService = TripDetectionService.shared
     @State private var selectedTrip: Trip?
-    @State private var showingContentView = false
     @State private var showTutorial = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -69,21 +68,20 @@ struct TripBrowseView: View {
                     }
                 }
             }
-            .fullScreenCover(isPresented: $showingContentView) {
-                if let trip = selectedTrip {
-                    ContentView(
-                        contentType: .photos,
-                        showTutorial: $showTutorial,
-                        initialFilter: .trip(trip.assetIdentifiers),
-                        onDismiss: {
-                            showingContentView = false
-                        }
-                    )
-                    .environmentObject(purchaseManager)
-                    .environmentObject(notificationManager)
-                    .environmentObject(streakManager)
-                    .environmentObject(happinessEngine)
-                }
+            .fullScreenCover(item: $selectedTrip) { trip in
+                ContentView(
+                    contentType: .photos,
+                    showTutorial: $showTutorial,
+                    initialFilter: .trip(trip.assetIdentifiers),
+                    onDismiss: {
+                        selectedTrip = nil
+                    }
+                )
+                .id(trip.id)
+                .environmentObject(purchaseManager)
+                .environmentObject(notificationManager)
+                .environmentObject(streakManager)
+                .environmentObject(happinessEngine)
             }
         }
         .onAppear {
@@ -160,6 +158,12 @@ struct TripBrowseView: View {
                 .font(.system(size: 13))
                 .foregroundColor(.secondary.opacity(0.7))
             
+            Text("You can close Holiday Mode while this runs. Keep Kage open and we'll continue scanning in the background.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary.opacity(0.75))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+            
             ProgressView(value: tripService.scanProgress)
                 .progressViewStyle(.linear)
                 .tint(.blue)
@@ -209,7 +213,6 @@ struct TripBrowseView: View {
                     TripCardView(trip: trip)
                         .onTapGesture {
                             selectedTrip = trip
-                            showingContentView = true
                         }
                 }
             }

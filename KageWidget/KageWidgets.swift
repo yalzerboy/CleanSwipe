@@ -81,7 +81,7 @@ struct KageOnThisDayWidget: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("On This Day")
-        .description("Photos from this day in previous years")
+        .description("Items from this day in previous years")
         .supportedFamilies([.systemMedium])
     }
 }

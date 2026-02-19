@@ -145,17 +145,39 @@ struct OnboardingFlowView: View {
                 }
             case .preparing:
                 PreparingView(progress: $loadingProgress) {
-                    currentStep = hasPremiumAccess ? .permissions : .freeTrialIntro
+                    currentStep = .permissions
                 }
             case .freeTrialIntro:
                 FreeTrialIntroView {
-                    currentStep = .permissions
+                    onComplete(.photos)
                 }
             case .permissions:
                 PermissionsView {
-                            // Complete onboarding and go to app
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        currentStep = .widgetShowcase
+                    }
+                }
+            case .widgetShowcase:
+                WidgetShowcaseOnboardingView(
+                    onContinue: {
+                        if hasPremiumAccess {
                             onComplete(.photos)
+                        } else {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                currentStep = .freeTrialIntro
+                            }
                         }
+                    },
+                    onSkip: {
+                        if hasPremiumAccess {
+                            onComplete(.photos)
+                        } else {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                currentStep = .freeTrialIntro
+                            }
+                        }
+                    }
+                )
                     default:
                         EmptyView()
                     }
@@ -1532,6 +1554,159 @@ struct PrivacyFeature: View {
                     .foregroundColor(.gray)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            
+            Spacer()
+        }
+    }
+}
+
+// MARK: - Widget Showcase Onboarding
+struct WidgetShowcaseOnboardingView: View {
+    let onContinue: () -> Void
+    let onSkip: () -> Void
+    
+    @State private var isAnimating = false
+    @State private var pulse = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            
+            Text("Add the On This Day Widget")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                .opacity(isAnimating ? 1.0 : 0.0)
+            
+            Text("See how many memories match today, then jump in and clean with one tap.")
+                .font(.system(size: 16, weight: .regular))
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 34)
+                .padding(.top, 12)
+                .opacity(isAnimating ? 1.0 : 0.0)
+            
+            ZStack {
+                RoundedRectangle(cornerRadius: 28)
+                    .fill(Color(.secondarySystemBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 28)
+                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                    )
+                
+                VStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(
+                            LinearGradient(
+                                gradient: Gradient(colors: [Color.blue.opacity(0.95), Color.indigo.opacity(0.9)]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 170, height: 98)
+                        .overlay(
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("On This Day")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(.white.opacity(0.9))
+                                    Text("24")
+                                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                                        .foregroundColor(.white)
+                                    Text("memories")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.85))
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                        )
+                        .scaleEffect(pulse ? 1.03 : 0.98)
+                        .shadow(color: Color.blue.opacity(0.25), radius: 10, x: 0, y: 6)
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        OnboardingWidgetStep(number: "1", text: "Long press your Home Screen")
+                        OnboardingWidgetStep(number: "2", text: "Tap +, then search “Kage”")
+                        OnboardingWidgetStep(number: "3", text: "Choose On This Day and tap Add")
+                    }
+                    .frame(width: 170, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
+                .frame(width: 210, height: 430, alignment: .top)
+                .padding(.top, 20)
+            }
+            .frame(width: 210, height: 430)
+            .clipped()
+            .padding(.top, 28)
+            .opacity(isAnimating ? 1.0 : 0.0)
+            
+            Spacer()
+            
+            VStack(spacing: 12) {
+                Button(action: {
+                    onContinue()
+                }) {
+                    Text("Continue")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 54)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    Color(red: 0.5, green: 0.2, blue: 0.8),
+                                    Color(red: 0.6, green: 0.3, blue: 0.9)
+                                ]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                
+                Button(action: {
+                    onSkip()
+                }) {
+                    Text("Maybe later")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.gray)
+                }
+            }
+            .padding(.horizontal, 32)
+            .padding(.bottom, 50)
+            .opacity(isAnimating ? 1.0 : 0.0)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.55)) {
+                isAnimating = true
+            }
+            
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+    }
+}
+
+private struct OnboardingWidgetStep: View {
+    let number: String
+    let text: String
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(number)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.white)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(Color(red: 0.5, green: 0.2, blue: 0.8)))
+            
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             
             Spacer()
         }
