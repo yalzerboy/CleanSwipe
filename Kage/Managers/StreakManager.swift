@@ -95,6 +95,9 @@ class StreakManager: ObservableObject {
         // Save data
         saveStreakData()
         
+        // Update widget data
+        updateWidgetData()
+        
         // Schedule streak-related notifications
         scheduleStreakNotifications()
         
@@ -466,6 +469,12 @@ class StreakManager: ObservableObject {
         UserDefaults.standard.set(totalPhotosToReview, forKey: cachedPhotoCountKey)
         UserDefaults.standard.set(totalStoragePotential, forKey: cachedStorageKey)
         UserDefaults.standard.set(Date(), forKey: cacheTimestampKey)
+        
+        // Update widget with latest stats
+        WidgetDataManager.shared.updateStatsData(
+            totalPhotosToReview: totalPhotosToReview,
+            totalStoragePotential: totalStoragePotential
+        )
     }
     
     private func shouldUseCachedStats() -> Bool {
@@ -515,6 +524,29 @@ class StreakManager: ObservableObject {
             .sorted()
             .map { formatter.string(from: $0) }
         UserDefaults.standard.set(strings, forKey: swipeDaysKey)
+        
+        // Update widget activity data
+        WidgetDataManager.shared.updateActivityDays(Array(swipeActivityDays))
+    }
+    
+    // MARK: - Widget Integration
+    
+    private func updateWidgetData() {
+        let status: String
+        switch getStreakStatus() {
+        case .activeToday: status = "active"
+        case .streakAtRisk: status = "atRisk"
+        case .streakBroken: status = "broken"
+        case .neverStarted: status = "neverStarted"
+        }
+        
+        WidgetDataManager.shared.updateStreakData(
+            currentStreak: currentStreak,
+            longestStreak: longestStreak,
+            streakStatus: status,
+            totalActiveDays: totalActiveDays,
+            lastActivityDate: lastActivityDate
+        )
     }
 }
 

@@ -183,6 +183,16 @@ struct ContentView: View {
         self.onDismiss = onDismiss
         self.initialFilterOverride = initialFilter
         self._selectedContentType = State(initialValue: contentType)
+        
+        // CRITICAL FIX: Initialize selectedFilter directly if an override is provided
+        // This prevents the "white screen" race condition where the view loads with .random
+        // before the async update in body runs.
+        if let initialFilter = initialFilter {
+            self._selectedFilter = State(initialValue: initialFilter)
+            // Targeted fix for Holiday Mode white screen:
+            // Identify if we're opening a specific trip to defer loading indicator until first photo is actually ready
+            self._isWaitingForInitialPhoto = State(initialValue: true)
+        }
     }
     
     @EnvironmentObject var notificationManager: NotificationManager
@@ -208,6 +218,7 @@ struct ContentView: View {
     @State private var isLoading = true
     @State private var showingPermissionAlert = false
     @State private var isCurrentPhotoFavorite = false // Track favorite status locally
+    @State private var isPhotoZoomed = false // Track zoom state to disable swipe while zoomed
     @State private var dragOffset = CGSize.zero
     @GestureState private var dragTranslation = CGSize.zero
     @State private var isCompleted = false
@@ -250,6 +261,8 @@ struct ContentView: View {
     @State private var lastPaywallSwipeMilestone = 0
     @AppStorage("lastAppOpenPaywallTime") private var lastAppOpenPaywallTime: Double = 0
     @State private var hasAppliedInitialFilter = false  // Track if initial filter override has been applied
+    @State private var isWaitingForInitialPhoto = false // targeted fix for Holiday Mode white screen
+    
     
     // Tutorial overlay states - moved to TutorialOverlay component
     
@@ -283,7 +296,9 @@ struct ContentView: View {
     // Persistence keys
     private let globalProcessedPhotoIdsKey = "globalProcessedPhotoIds"
     private let processedPhotoIdsKey = "processedPhotoIds"
-    private let totalProcessedKey = "totalProcessed"
+    // Use a different key for the session-based binding vs the lifetime total
+    private let totalProcessedKey = "totalProcessedSession" 
+    private let totalProcessedLifetimeKey = "totalProcessedLifetime" // New key for lifetime stats
     private let filterProcessedCountsKey = "filterProcessedCounts"
     private let selectedFilterKey = "selectedFilter"
     private let selectedContentTypeKey = "selectedContentType"
@@ -494,14 +509,9 @@ struct ContentView: View {
     
     var body: some View {
         // Apply initial filter override ONLY ONCE (not on every body evaluation)
-        let _ = {
-            if let override = initialFilterOverride, !hasAppliedInitialFilter {
-                DispatchQueue.main.async {
-                    self.selectedFilter = override
-                    self.hasAppliedInitialFilter = true
-                }
-            }
-        }()
+        // REMOVED: Initial filter override logic moved to init() to prevent race condition
+        // The async update here was causing the view to load with empty state (white screen)
+        // because onAppear often ran before this update.
         
         // Restore swiped photos if they were lost during view refresh
         if swipedPhotos.isEmpty && !showingReviewScreen {
@@ -882,6 +892,20 @@ struct ContentView: View {
             loadPersistedData()
             
             requestPhotoAccess()
+            
+            // Fix for White Screen in Holiday Mode
+            // Safety timeout to ensure isWaitingForInitialPhoto doesn't hang the UI
+            // This flag is set in init() for .trip filters, but if image loading fails or takes too long,
+            // we need to ensure the loading screen is dismissed so the user sees something (even empty state).
+            if isWaitingForInitialPhoto {
+                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                     if self.isWaitingForInitialPhoto {
+                         self.isWaitingForInitialPhoto = false
+                         self.isLoading = false
+                     }
+                 }
+            }
+            
             
             Task {
                 await purchaseManager.checkSubscriptionStatus()
@@ -1343,6 +1367,54 @@ struct ContentView: View {
                         .overlay {
                             swipeGlow(for: currentDragOffset, cornerRadius: 16)
                         }
+                        // CRITICAL: Attach gesture to the video container just like the image container
+                        // This was missing, causing swipes to be ignored on videos
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 20)
+                                .updating($dragTranslation) { value, state, _ in
+                                // Videos don't support zoom yet, so no need to check isPhotoZoomed
+                                if self.lastGestureTime == nil || Date().timeIntervalSince(self.lastGestureTime!) > 1.0 {
+                                    self.lastGestureTime = Date()
+                                }
+                                state = value.translation
+                                }
+                                .onEnded { value in
+                                    // Videos don't support zoom yet
+                                    if !isUndoing {
+                                        let translation = limitTranslation(value.translation)
+                                        let predicted = limitTranslation(value.predictedEndTranslation)
+                                        let effectiveWidth = abs(predicted.width) > abs(translation.width) ? predicted.width : translation.width
+                                        let swipeThreshold: CGFloat = 80.0
+                                        
+                                        if effectiveWidth > swipeThreshold {
+                                            dragOffset = CGSize(width: translation.width, height: 0)
+                                            // Swipe right - keep
+                                            handleSwipe(action: .keep)
+                                        } else if effectiveWidth < -swipeThreshold {
+                                            dragOffset = CGSize(width: translation.width, height: 0)
+                                            // Swipe left - delete
+                                            handleSwipe(action: .delete)
+                                        } else {
+                                            // Reset position
+                                            withAnimation(.easeOut(duration: 0.1)) {
+                                                dragOffset = .zero
+                                            }
+                                        }
+                                    }
+                                }
+                        )
+                        .onTapGesture {
+                            // Tap to play/pause video if current asset is a video
+                            if isCurrentAssetVideo, let player = currentVideoPlayer {
+                                if player.rate > 0 {
+                                    // Video is playing - pause it
+                                    player.pause()
+                                } else {
+                                    // Video is paused - play it
+                                    player.play()
+                                }
+                            }
+                        }
                         // Gesture moved to Color.clear layer for immediate recognition
                         .onAppear {
                             // CRITICAL: Ensure only current video can play
@@ -1389,13 +1461,13 @@ struct ContentView: View {
                     // Use stable ZStack identity based on asset, not image, to prevent gesture detachment during quality upgrades
                         ZStack {
                         if let image = currentImage {
-                            // Zoomable image - disable hit testing for better drag performance
-                            Image(uiImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .id(currentAsset?.localIdentifier ?? UUID().uuidString)
+                            // Zoomable image view - UIScrollView-backed for native smooth zoom
+                            ZoomableImageView(
+                                image: image,
+                                isZoomed: $isPhotoZoomed,
+                                imageID: currentAsset?.localIdentifier ?? UUID().uuidString
+                            )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .allowsHitTesting(false)
                                 .blur(radius: isCurrentImageLowQuality ? 1.5 : 0) // Subtle blur effect for low quality
                                 .overlay(
                                     // Add subtle border when low quality
@@ -1427,30 +1499,29 @@ struct ContentView: View {
                         .overlay {
                             swipeGlow(for: currentDragOffset, cornerRadius: 16)
                         }
-                }
-                
-                // Gesture layer at outer ZStack level - always present, never recreated, prevents jitter
-                // This ensures gestures work immediately when photo appears and don't jitter during dragging
-                Color.clear
-                    .contentShape(RoundedRectangle(cornerRadius: 16))
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
+                        // Swipe gesture directly on photo container — only active when not zoomed
+                        // CRITICAL FIX: Unconditional gesture modifier to prevent view rebuilds
+                        // Previously: isPhotoZoomed ? nil : DragGesture... caused the View graph to change
+                        // when zooming, forcing a rebuild of ZoomableImageView and causing lag.
+                        // Now we keep the gesture attached but rely on the inner guards to ignore it when zoomed.
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 20)
                                 .updating($dragTranslation) { value, state, _ in
-                                // Track gesture timing for analytics
+                                guard !self.isPhotoZoomed else { return }
                                 if self.lastGestureTime == nil || Date().timeIntervalSince(self.lastGestureTime!) > 1.0 {
                                     self.lastGestureTime = Date()
                                 }
-                                // Direct assignment for maximum responsiveness - no limiting during drag
-                                    state = value.translation
+                                state = value.translation
                                 }
-                                        .onEnded { value in
-                                            if !isUndoing {
-                                                let translation = limitTranslation(value.translation)
-                                                let predicted = limitTranslation(value.predictedEndTranslation)
-                                                let effectiveWidth = abs(predicted.width) > abs(translation.width) ? predicted.width : translation.width
-                                                let swipeThreshold: CGFloat = 80.0
-                                                
-                                                if effectiveWidth > swipeThreshold {
+                                .onEnded { value in
+                                    guard !isPhotoZoomed else { return }
+                                    if !isUndoing {
+                                        let translation = limitTranslation(value.translation)
+                                        let predicted = limitTranslation(value.predictedEndTranslation)
+                                        let effectiveWidth = abs(predicted.width) > abs(translation.width) ? predicted.width : translation.width
+                                        let swipeThreshold: CGFloat = 80.0
+                                        
+                                        if effectiveWidth > swipeThreshold {
                                                     dragOffset = CGSize(width: translation.width, height: 0)
                                         // Swipe right - keep
                                                     handleSwipe(action: .keep)
@@ -1477,6 +1548,7 @@ struct ContentView: View {
                                 // Video is paused - play it
                                 player.play()
                             }
+                        }
                         }
                     }
                     
@@ -3101,6 +3173,8 @@ struct ContentView: View {
             return "favorites"
         case .shortVideos:
             return "shortVideos"
+        case .trip:
+            return "trip"
         }
     }
     
@@ -3978,7 +4052,10 @@ struct ContentView: View {
                 // Check if current filter is completed
                 self.isCategoryCompleted = self.isCurrentFilterCompleted()
                 
-                self.isLoading = false
+                // If we're waiting for a specific photo (Holiday Mode), don't turn off loading yet
+                if !isWaitingForInitialPhoto {
+                    self.isLoading = false
+                }
                 self.isRefreshing = false
                 
                 if self.photos.isEmpty {
@@ -4563,6 +4640,14 @@ struct ContentView: View {
                         transaction.disablesAnimations = true
                         withTransaction(transaction) {
                             self.dragOffset = .zero
+                            
+                            // Targeted fix: If we were waiting for initial photo, we can now show the view
+                            if self.isWaitingForInitialPhoto {
+                                DispatchQueue.main.async {
+                                    self.isLoading = false
+                                    self.isWaitingForInitialPhoto = false
+                                }
+                            }
                         }
                     } else {
                         let isInCloud = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
@@ -4844,6 +4929,9 @@ struct ContentView: View {
         }
     }
     
+    
+    // MARK: - Placeholder Helper
+    
     private func createPlaceholderImage() -> UIImage? {
         // Create a simple placeholder image
         let size = CGSize(width: 300, height: 300)
@@ -4865,10 +4953,12 @@ struct ContentView: View {
             height: iconSize
         )
         
-        context.setFillColor(UIColor.systemGray3.cgColor)
-        context.fillEllipse(in: iconRect)
+        let iconPath = UIBezierPath(roundedRect: iconRect, cornerRadius: 10)
+        UIColor.systemGray3.setFill()
+        iconPath.fill()
         
-        return UIGraphicsGetImageFromCurrentImageContext()
+        guard let image = UIGraphicsGetImageFromCurrentImageContext() else { return nil }
+        return image
     }
     
     private func filterShortVideosAsynchronously(_ allVideos: [PHAsset]) {
@@ -5331,6 +5421,12 @@ struct ContentView: View {
                     self.isLoadingFirstVideo = false
                     self.cancelSkipButtonTimer(loadingCompleted: true)
                     
+                    // Targeted fix: If we were waiting for initial photo/video, clear it now
+                    if self.isWaitingForInitialPhoto {
+                        self.isLoading = false
+                        self.isWaitingForInitialPhoto = false
+                    }
+                    
                     // Start playback
                     self.startVideoPlayback(player)
                 }
@@ -5485,6 +5581,14 @@ struct ContentView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 dragOffset = .zero
+                
+                // Targeted fix: If we were waiting for initial photo, we can now show the view
+                if isWaitingForInitialPhoto {
+                    DispatchQueue.main.async {
+                        self.isLoading = false
+                        self.isWaitingForInitialPhoto = false
+                    }
+                }
             }
             
             // Load the content
@@ -5651,17 +5755,23 @@ struct ContentView: View {
                         self.cleanupPlayer(existingPlayer)
                     }
                     
-                    self.preloadedVideoAssets.removeValue(forKey: assetId)
+            self.preloadedVideoAssets.removeValue(forKey: assetId)
             self.addLoopObserver(for: player)
-                    self.currentVideoPlayer = player
-                    self.isCurrentAssetVideo = true
-                    self.isVideoLoading = false
-                    self.videoLoadStartTime = nil
-                    self.videoLoadFailed = false
-                    self.cancelSkipButtonTimer(loadingCompleted: true)
-                    
-                    self.startVideoPlayback(player)
-                    
+            self.currentVideoPlayer = player
+            self.isCurrentAssetVideo = true
+            self.isVideoLoading = false
+            self.videoLoadStartTime = nil
+            self.videoLoadFailed = false
+            self.cancelSkipButtonTimer(loadingCompleted: true)
+            
+            // Targeted fix: If we were waiting for initial photo/video, clear it now
+            if self.isWaitingForInitialPhoto {
+                self.isLoading = false
+                self.isWaitingForInitialPhoto = false
+            }
+            
+            self.startVideoPlayback(player)
+            
             // Clear first video loading state
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             self.isLoadingFirstVideo = false
@@ -5956,6 +6066,9 @@ struct ContentView: View {
     private func handleSwipe(action: SwipeAction) {
         let swipeStartTime = Date()
 
+        // Reset zoom state for next photo
+        isPhotoZoomed = false
+        
         // Mark that user has attempted to swipe
         hasAttemptedSwipe = true
         
@@ -6060,8 +6173,7 @@ struct ContentView: View {
             return
         }
         
-        // Get the current photo before incrementing index
-        var currentAsset = currentBatch[currentPhotoIndex]
+        // NOTE: do NOT use a local `currentAsset` here — it would shadow self.currentAsset
         let nextIndex = currentPhotoIndex + 1
         
         // Check if we've completed a batch of 15 photos
@@ -6134,7 +6246,7 @@ struct ContentView: View {
         if let preloadedImage = preloadedImages[assetId] {
             // Use preloaded image immediately
             currentImage = preloadedImage.image
-            currentAsset = nextAsset
+            currentAsset = nextAsset  // update @State var — no local shadow
             isCurrentAssetVideo = false
             isCurrentImageLowQuality = preloadedImage.isDegraded
             preloadedImages.removeValue(forKey: assetId)
@@ -6152,7 +6264,7 @@ struct ContentView: View {
         } else if nextAsset.mediaType == .video {
             // Use atomic video switching
             switchToVideo(asset: nextAsset)
-            currentAsset = nextAsset
+            currentAsset = nextAsset  // update @State var — no local shadow
             imageSet = true
 
             // Set metadata
@@ -6954,6 +7066,9 @@ struct ContentView: View {
                 
             filteredPhotos = shortVideos
 
+        case .trip(let identifiers):
+            let idSet = Set(identifiers)
+            filteredPhotos = filteredPhotos.filter { idSet.contains($0.localIdentifier) }
         }
         
         // Exclude processed photos for current filter
@@ -7091,6 +7206,8 @@ struct ContentView: View {
                 matchesFilter = asset.isFavorite
             case .shortVideos:
                 matchesFilter = asset.mediaType == .video && asset.duration > 0 && asset.duration <= 10.0
+            case .trip(let identifiers):
+                matchesFilter = identifiers.contains(asset.localIdentifier)
             }
 
             if matchesFilter {
@@ -7176,6 +7293,8 @@ struct ContentView: View {
                 } else {
                     continue
                 }
+        case .trip(let identifiers):
+                matchesFilter = identifiers.contains(asset.localIdentifier)
             }
             
             // No additional video duration filter needed since it's handled in the filter switch
@@ -7653,13 +7772,26 @@ struct ContentView: View {
             let photoIdsData = try? JSONEncoder().encode(processedIds)
             let filterCountsData = try? JSONEncoder().encode(filterCounts)
             let filterData = try? JSONEncoder().encode(selectedFilterValue)
-            
-            // Write to UserDefaults on background (UserDefaults is thread-safe)
-            UserDefaults.standard.set(globalIds, forKey: globalIdsKey)
-            if let photoIdsData = photoIdsData {
-                UserDefaults.standard.set(photoIdsData, forKey: processedIdsKey)
-            }
-            UserDefaults.standard.set(globalIds.count, forKey: totalProcessedKeyName)
+         // Update lifetime total
+            // Update lifetime total
+            // CRITICAL FIX: Set directly to count instead of adding to previous value
+            // This prevents artificial inflation where we keep adding history to the total
+            let newLifetime = globalProcessedPhotoIds.count
+            UserDefaults.standard.set(newLifetime, forKey: totalProcessedLifetimeKey)
+        
+        // Use session key for current session tracking if needed
+        let totalProcessedKeyName = self.totalProcessedKey
+        if let storedValue = UserDefaults.standard.object(forKey: totalProcessedKeyName) as? Int {
+             // Already have a stored value
+        } else {
+            UserDefaults.standard.set(0, forKey: totalProcessedKeyName)
+        }
+        
+        if let globalIdsData = try? JSONEncoder().encode(globalProcessedPhotoIds) {
+            UserDefaults.standard.set(globalIdsData, forKey: globalProcessedPhotoIdsKey)
+            // Save count to session key
+            UserDefaults.standard.set(globalProcessedPhotoIds.count, forKey: totalProcessedKeyName)
+        }
             if let filterCountsData = filterCountsData {
                 UserDefaults.standard.set(filterCountsData, forKey: filterCountsKey)
             }

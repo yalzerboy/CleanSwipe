@@ -88,17 +88,32 @@ struct AsyncMenuRow: View {
     
     var body: some View {
         HStack {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(isSelected ? .white : .blue)
-                .frame(width: 24, height: 24)
-                .background(isSelected ? Color.blue : Color.clear)
-                .clipShape(Circle())
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(isSelected ? .white : .blue)
+                    .frame(width: 24, height: 24)
+                    .background(isSelected ? Color.blue : Color.clear)
+                    .clipShape(Circle())
+                
+                if !isLoading, let count = photoCount, count == 0, let processed = processedCount, processed > 0 {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                        .background(Circle().fill(Color.white).padding(1))
+                        .offset(x: 4, y: 4)
+                }
+            }
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.primary)
+                
+                Text(subtitle)
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 
                 if let processedCount = processedCount {
                     if processedCount > 0 {

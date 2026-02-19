@@ -16,6 +16,10 @@ struct EnhancedStreakView: View {
     @State private var animateStreak = false
     @State private var showingPaywall = false
     
+    // Add properties for stats
+    var yesterdayCount: Int = 0
+    var totalProcessed: Int = 0
+    
     var body: some View {
         VStack(spacing: 20) {
             // Main Streak Header
@@ -209,6 +213,38 @@ struct EnhancedStreakView: View {
     
     private var streakProgressSection: some View {
         VStack(spacing: 12) {
+            // New Stats Rows
+            HStack {
+                Text("Reviewed Yesterday")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                
+                Spacer()
+                
+                Text("\(yesterdayCount)")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+            }
+            
+            HStack {
+                Text("Total Reviewed")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.primary)
+                
+                Spacer()
+                
+                Text("\(totalProcessed)")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+            }
+            
+            Divider()
+                .padding(.vertical, 4)
+            
             HStack {
                 Text("Next Milestone")
                     .font(.headline)
@@ -463,7 +499,7 @@ struct MilestoneCard: View {
 }
 
 #Preview {
-    EnhancedStreakView()
+    EnhancedStreakView(yesterdayCount: 15, totalProcessed: 1250)
         .environmentObject(StreakManager.shared)
         .environmentObject(PurchaseManager.shared)
 }

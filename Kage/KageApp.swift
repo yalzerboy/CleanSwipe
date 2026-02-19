@@ -35,6 +35,8 @@ struct KageApp: App {
     @StateObject private var streakManager = StreakManager.shared
     @StateObject private var happinessEngine = HappinessEngine.shared
     @State private var hasIncrementedLaunchCount = false
+    @State private var showingWhatsNew = false
+    @State private var pendingDeepLinkURL: URL? = nil
     
     init() {
         // Load persisted onboarding states from UserDefaults
@@ -53,6 +55,9 @@ struct KageApp: App {
 
         // Configure Firebase Analytics (asynchronous, doesn't block app launch)
         AnalyticsManager.shared.configure()
+        
+        // Check if we should show What's New
+        _showingWhatsNew = State(initialValue: shouldShowWhatsNew())
     }
     
     var body: some Scene {
@@ -91,12 +96,27 @@ struct KageApp: App {
                         // Persist welcome flow completion
                         UserDefaults.standard.set(true, forKey: "hasCompletedWelcomeFlow")
                     }
+                } else if showingWhatsNew {
+                    // Show What's New after onboarding/welcome but before main app
+                    WhatsNewView(onDismiss: {
+                        markWhatsNewSeen()
+                        showingWhatsNew = false
+                    })
                 } else {
                     HomeView()
                         .environmentObject(purchaseManager)
                         .environmentObject(notificationManager)
                         .environmentObject(streakManager)
                         .environmentObject(happinessEngine)
+                        .onAppear {
+                            // Handle any deep link that arrived before HomeView was ready
+                            if let url = pendingDeepLinkURL {
+                                pendingDeepLinkURL = nil
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                    handleDeepLink(url)
+                                }
+                            }
+                        }
                 }
             }
             .sheet(isPresented: $showingMailComposer) {
@@ -200,10 +220,33 @@ struct KageApp: App {
                 // Clean up any temporary video files when app terminates
                 cleanupTempVideoFiles()
             }
+            .onOpenURL { url in
+                // Handle widget deep links
+                guard url.scheme == "kage" else { return }
+                
+                // If HomeView isn't ready yet (e.g. app cold-started from widget),
+                // store the URL and handle it once HomeView appears
+                if showingWhatsNew || !hasCompletedOnboarding || !hasPhotoAccess() {
+                    pendingDeepLinkURL = url
+                } else {
+                    handleDeepLink(url)
+                }
+            }
         }
     }
     
     @MainActor
+    private func handleDeepLink(_ url: URL) {
+        switch url.host {
+        case "onthisday":
+            NotificationCenter.default.post(name: .openOnThisDayFilter, object: nil)
+        case "home":
+            NotificationCenter.default.post(name: .refreshHomeData, object: nil)
+        default:
+            break
+        }
+    }
+    
     private func handleQuickAction(_ action: QuickActionType) {
         debugLog("Handling quick action in app: \(action)")
         // leaveFeedback is handled directly in AppDelegate, other actions can be handled here
@@ -290,6 +333,40 @@ struct KageApp: App {
         Device: \(deviceModel)
         """
     }
+    
+    // MARK: - What's New Logic
+    
+    private func shouldShowWhatsNew() -> Bool {
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let lastSeenVersion = UserDefaults.standard.string(forKey: "lastSeenVersion")
+        let launchCount = UserDefaults.standard.integer(forKey: "appLaunchCount")
+        let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        
+        // Don't show if onboarding not complete
+        guard hasCompletedOnboarding else { return false }
+        
+        // Increment launch count
+        UserDefaults.standard.set(launchCount + 1, forKey: "appLaunchCount")
+        
+        // New user: show on second launch (after completing onboarding)
+        if lastSeenVersion == nil && launchCount + 1 == 2 {
+            return true
+        }
+        
+        // Existing user: show on first launch after version update
+        if let lastSeen = lastSeenVersion, lastSeen != currentVersion {
+            return true
+        }
+        
+        return false
+    }
+    
+    private func markWhatsNewSeen() {
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        UserDefaults.standard.set(currentVersion, forKey: "lastSeenVersion")
+    }
+    
+    // MARK: - Photo Access
     
     private func hasPhotoAccess() -> Bool {
         let photoStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)

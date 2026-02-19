@@ -15,16 +15,19 @@ struct HomeView: View {
     @EnvironmentObject private var purchaseManager: PurchaseManager
     @EnvironmentObject private var notificationManager: NotificationManager
     @EnvironmentObject private var streakManager: StreakManager
+    @EnvironmentObject private var happinessEngine: HappinessEngine
     @Environment(\.colorScheme) var colorScheme
     @State private var selectedFilter: PhotoFilter = .random
     @State private var selectedContentType: ContentType = .photos
     @State private var contentViewContentType: ContentType = .photos  // Separate state for ContentView
     @State private var showingContentView = false
     @State private var showingSettings = false
+    @State private var showingWhatsNew = false
     @State private var showingSmartAICleanup = false
     @State private var showingSmartAIPaywall = false
     @State private var showingDuplicateReview = false
     @State private var showingDuplicatePaywall = false
+    @State private var showingTripBrowse = false
     @State private var showingPostOnboardingOffer = false
     @State private var postOnboardingOffering: Offering?
     @State private var totalPhotoCount = 0
@@ -46,6 +49,8 @@ struct HomeView: View {
     @State private var todayCount = 0
     @State private var yesterdayCount = 0
     @State private var lastWeekCount = 0
+    @State private var totalProcessed = 0 // Track total processed photos
+    @State private var processedPhotoIds: [PhotoFilter: Set<String>] = [:] // Track processed photos per filter
     
     // Legacy streak tracking (will be replaced by StreakManager)
     @State private var sortingProgress = 0.0
@@ -95,9 +100,14 @@ struct HomeView: View {
                 
                 ScrollView([.vertical], showsIndicators: false) {
                     VStack(spacing: 16) {
-                        Group {
-                            statsSection
+                        if hasOnThisDayPhotos && !isOnThisDayDone {
+                            onThisDaySection
                                 .padding(.horizontal, 16)
+                                .padding(.top, 8)
+                        }
+                        
+                        Group {
+                            // statsSection removed
                             utilitiesSection
                                 .padding(.horizontal, 16)
                             
@@ -106,10 +116,16 @@ struct HomeView: View {
                                 .padding(.top, -4) // Reduce gap to brainrot button
                                 .padding(.horizontal, 16)
                             
+                            holidayModeButton
+                                .padding(.horizontal, 16)
+                            
                             streakSection
                                 .padding(.horizontal, 16)
-                            onThisDaySection
-                                .padding(.horizontal, 16)
+                            
+                            if !hasOnThisDayPhotos || isOnThisDayDone {
+                                onThisDaySection
+                                    .padding(.horizontal, 16)
+                            }
                         }
                         
                         myLifeSection
@@ -173,6 +189,13 @@ struct HomeView: View {
             // Refresh data when app becomes active (user returns from ContentView)
             refreshData()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openOnThisDayFilter)) { _ in
+            // Widget deep link: open On This Day mode
+            selectedContentType = .photos
+            contentViewContentType = .photos
+            selectedFilter = .onThisDay
+            showingContentView = true
+        }
         .onChange(of: pendingQuickAction) { newValue in
             guard let action = newValue else { return }
             handleQuickAction(action)
@@ -218,6 +241,9 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView()
+        }
+        .sheet(isPresented: $showingWhatsNew) {
+            WhatsNewView()
         }
         .sheet(isPresented: $showingSmartAICleanup) {
             SmartAICleanupView(onDeletion: { _, _, _ in
@@ -265,6 +291,13 @@ struct HomeView: View {
             SmartCleanupHubView(onDeletion: { _, _, _ in
                 refreshData()
             })
+        }
+        .sheet(isPresented: $showingTripBrowse) {
+            TripBrowseView()
+                .environmentObject(purchaseManager)
+                .environmentObject(notificationManager)
+                .environmentObject(streakManager)
+                .environmentObject(happinessEngine)
         }
     }
     
@@ -351,11 +384,13 @@ struct HomeView: View {
                     isLoading: false
                 ) {
                     // Set content type explicitly for ContentView
-                    selectedFilter = .random  // Show all videos with random filter
                     selectedContentType = .videos
-                    contentViewContentType = .videos  // This is what ContentView will use
+                    contentViewContentType = .videos
+                    selectedFilter = .random
                     showingContentView = true
                 }
+                
+
             }
             
             brainrotReelButton
@@ -364,7 +399,10 @@ struct HomeView: View {
     
     // MARK: - Enhanced Streak Section
     private var streakSection: some View {
-        EnhancedStreakView()
+        EnhancedStreakView(
+             yesterdayCount: yesterdayCount,
+             totalProcessed: totalProcessed
+        )
             .onAppear {
                 // Record daily activity when streak section appears
                 streakManager.recordDailyActivity()
@@ -372,69 +410,87 @@ struct HomeView: View {
     }
     
     // MARK: - On This Day Section
+    @ViewBuilder
     private var onThisDaySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("On this day")
+        if onThisDayPhotos.isEmpty {
+             VStack(alignment: .leading, spacing: 12) {
+                 Text("On this day")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundColor(.primary)
-                
-                Text("Clean your library one day at a time")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.secondary)
-            }
-            
-            if onThisDayPhotos.isEmpty {
-                Text("No photos from this day in previous years")
+                 
+                 Text("No photos from this day in previous years")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 40)
-            } else {
-                Button(action: {
-                    selectedContentType = .photos
-                    contentViewContentType = .photos
-                    selectedFilter = .onThisDay
-                    showingContentView = true
-                }) {
-                    VStack(spacing: 12) {
-                        // Show multiple photos in a grid layout
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
-                            ForEach(onThisDayPhotos.prefix(8), id: \.localIdentifier) { asset in
-                                OnThisDayThumbnail(asset: asset)
-                            }
-                        }
-                        
-                        // Button text and count
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("View photos from \(formatCurrentDate())")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                
-                                Text("\(onThisDayPhotos.count) photos from this day across all years")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Spacer()
-                            
-                            Image(systemName: "arrow.right.circle.fill")
-                                .font(.system(size: 20))
-                                .foregroundColor(.blue)
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity)
-                    .background(Color(.systemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color(.systemGray5), lineWidth: 1)
-                    )
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
+                    .padding(.vertical, 20)
+             }
+        } else {
+             Button(action: {
+                 selectedContentType = .photos
+                 contentViewContentType = .photos
+                 selectedFilter = .onThisDay
+                 showingContentView = true
+             }) {
+                 VStack(spacing: 12) {
+                     // Title Header inside the card
+                     HStack {
+                         Text("On this day")
+                             .font(.system(size: 22, weight: .bold, design: .rounded))
+                             .foregroundColor(.primary)
+                         
+                         Spacer()
+                         
+                         if isOnThisDayDone {
+                             Image(systemName: "checkmark.circle.fill")
+                                 .foregroundColor(.green)
+                                 .font(.system(size: 22))
+                         }
+                     }
+                     
+                     // Show multiple photos in a grid layout
+                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                         ForEach(onThisDayPhotos.prefix(8), id: \.localIdentifier) { asset in
+                             OnThisDayThumbnail(asset: asset)
+                                 .opacity(isOnThisDayDone ? 0.5 : 1.0)
+                         }
+                     }
+                     
+                     // Button text and count
+                     HStack {
+                         VStack(alignment: .leading, spacing: 4) {
+                             Text(isOnThisDayDone ? "All Done" : "View photos from \(formatCurrentDate())")
+                                 .font(.system(size: 16, weight: .semibold))
+                                 .foregroundColor(isOnThisDayDone ? .green : .primary)
+                             
+                             Text("\(onThisDayPhotos.count) photos from this day across all years")
+                                 .font(.system(size: 12, weight: .medium))
+                                 .foregroundColor(.secondary)
+                         }
+                         
+                         Spacer()
+                         
+                         if isOnThisDayDone {
+                             Image(systemName: "checkmark.circle.fill")
+                                 .font(.system(size: 24))
+                                 .foregroundColor(.green)
+                         } else {
+                             Image(systemName: "arrow.right.circle.fill")
+                                 .font(.system(size: 20))
+                                 .foregroundColor(.blue)
+                         }
+                     }
+                 }
+                 .padding(16)
+                 .frame(maxWidth: .infinity)
+                 .background(Color(.systemBackground))
+                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                 .overlay(
+                     RoundedRectangle(cornerRadius: 16)
+                         .stroke(isOnThisDayDone ? Color.green.opacity(0.3) : Color(.systemGray5), lineWidth: isOnThisDayDone ? 2 : 1)
+                 )
+             }
+             .buttonStyle(PlainButtonStyle())
+             .disabled(isOnThisDayDone)
         }
     }
     
@@ -465,7 +521,8 @@ struct HomeView: View {
                             YearCard(
                                 year: year,
                                 photoCount: yearPhotoCounts[year] ?? 0,
-                                thumbnailAsset: yearThumbnails[year]
+                                thumbnailAsset: yearThumbnails[year],
+                                isCompleted: isYearCompleted(year)
                             ) {
                                 selectedContentType = .photos
                                 contentViewContentType = .photos
@@ -540,7 +597,7 @@ struct HomeView: View {
                     }
                 }
                 
-                Text(hasPremiumAccess ? "Bulk delete blurry, old, & large files" : "Premium feature")
+                Text(hasPremiumAccess ? "Bulk delete blurry, old & large files" : "Premium feature")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.secondary)
             }
@@ -575,6 +632,32 @@ struct HomeView: View {
         formatter.countStyle = .file
         formatter.includesUnit = true
         return formatter.string(fromByteCount: total)
+    }
+    
+    // Logic to determine if On This Day is completed
+    private var isOnThisDayDone: Bool {
+        guard !onThisDayPhotos.isEmpty else { return false }
+        
+        let processedIds = processedPhotoIds[.onThisDay] ?? []
+        // Check if all photos in onThisDayPhotos are present in processedIds
+        // We check if there are any photos that are NOT in processedIds
+        let remainingPhotos = onThisDayPhotos.filter { !processedIds.contains($0.localIdentifier) }
+        return remainingPhotos.isEmpty
+    }
+    
+    private var hasOnThisDayPhotos: Bool {
+        return !onThisDayPhotos.isEmpty
+    }
+    
+    // Check if all photos for a specific year have been processed
+    private func isYearCompleted(_ year: Int) -> Bool {
+        // If we don't have count yet, assume not completed
+        guard let totalCount = yearPhotoCounts[year], totalCount > 0 else { return false }
+        
+        let processedIds = processedPhotoIds[.year(year)] ?? []
+        // If we have processed as many or more than the total, it's done
+        // Note: This is an approximation. Ideally we'd check ID overlap, but we don't load all assets for years.
+        return processedIds.count >= totalCount
     }
     
     private var smartCleaningModesGrid: some View {
@@ -648,6 +731,69 @@ struct HomeView: View {
             }
         }
     }
+    
+    // MARK: - Holiday Mode Button
+    private var holidayModeButton: some View {
+        Button(action: {
+            showingTripBrowse = true
+        }) {
+            HStack(spacing: 16) {
+                Image(systemName: "airplane.departure")
+                    .font(.title2)
+                    .foregroundColor(.white)
+                    .frame(width: 50, height: 50)
+                    .background(
+                        LinearGradient(
+                            gradient: Gradient(colors: [.teal, .blue]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("Holiday Mode")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.primary)
+                        
+                        Text("BETA")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.orange))
+                    }
+                    
+                    Text("Sort by trips away from home")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(16)
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(
+                        LinearGradient(
+                            gradient: Gradient(colors: [.teal.opacity(0.3), .blue.opacity(0.3)]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        lineWidth: 2
+                    )
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
     private var brainrotReelButton: some View {
         Button(action: {
             // Set content type explicitly for ContentView
@@ -672,7 +818,7 @@ struct HomeView: View {
                 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        Text("Brainrot Reel Style")
+                        Text("Reel Style")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(.primary)
                         
@@ -738,10 +884,6 @@ struct HomeView: View {
     // MARK: - My Cleaning Stats Section
     private var myCleaningStatsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("My Cleaning Stats")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundColor(.primary)
-            
             NavigationLink(destination: StreakAnalyticsView()) {
                 HStack(spacing: 16) {
                     Image(systemName: "chart.bar.fill")
@@ -781,6 +923,55 @@ struct HomeView: View {
                         .stroke(
                             LinearGradient(
                                 gradient: Gradient(colors: [.green.opacity(0.3), .mint.opacity(0.3)]),
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            lineWidth: 2
+                        )
+                )
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Widgets button
+            Button(action: { showingWhatsNew = true }) {
+                HStack(spacing: 16) {
+                    Image(systemName: "square.grid.2x2.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .frame(width: 50, height: 50)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [.indigo, .purple]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Add Widgets")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.primary)
+                        
+                        Text("Put Kage on your home screen")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .padding(16)
+                .background(Color(.systemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(
+                            LinearGradient(
+                                gradient: Gradient(colors: [.indigo.opacity(0.3), .purple.opacity(0.3)]),
                                 startPoint: .leading,
                                 endPoint: .trailing
                             ),
@@ -862,7 +1053,7 @@ struct HomeView: View {
             }
             
             await loadStats()
-            await loadCounts(forceReload: false) // Use cache if available
+            await loadCounts(forceReload: true) // Force reload counts to reflect deletions
             
             // Refresh StreakManager stats to update photo counts and storage potential after deletions
             streakManager.refreshStats()
@@ -1070,6 +1261,23 @@ struct HomeView: View {
             self.todayCount = todayProcessed
             self.yesterdayCount = yesterdayProcessed
             self.lastWeekCount = weekProcessed
+            // CRITICAL FIX: Read lifetime total instead of session total
+            self.totalProcessed = UserDefaults.standard.integer(forKey: "totalProcessedLifetime")
+            
+            // Load processed IDs for On This Day status check
+            if let processedData = UserDefaults.standard.data(forKey: "processedPhotoIds") {
+                do {
+                    let loadedProcessedIds = try JSONDecoder().decode([PhotoFilter: Set<String>].self, from: processedData)
+                    self.processedPhotoIds = loadedProcessedIds
+                } catch {
+                    print("Error decoding processedPhotoIds: \(error)")
+                    // Ensure we have a valid empty state if decoding fails
+                    if self.processedPhotoIds.isEmpty {
+                        self.processedPhotoIds = [:]
+                    }
+                }
+            }
+            
             self.isLoadingStats = false
         }
     }
@@ -1256,6 +1464,10 @@ struct HomeView: View {
             let previous = self.cachedOnThisDayAssets
             self.cachedOnThisDayAssets = topAssets
             self.onThisDayPhotos = topAssets
+            
+            // Update widget with On This Day count and first photo
+            let firstPhotoID = topAssets.first?.localIdentifier
+            WidgetDataManager.shared.updateOnThisDayPhotos(count: topAssets.count, photoID: firstPhotoID)
             PhotoLibraryCache.shared.stopCaching(assets: previous, targetSize: targetSize)
             PhotoLibraryCache.shared.startCaching(assets: topAssets, targetSize: targetSize)
         }
@@ -1622,7 +1834,16 @@ struct YearCard: View {
     let year: Int
     let photoCount: Int
     let thumbnailAsset: PHAsset?
+    let isCompleted: Bool
     let action: () -> Void
+    
+    init(year: Int, photoCount: Int, thumbnailAsset: PHAsset?, isCompleted: Bool = false, action: @escaping () -> Void) {
+        self.year = year
+        self.photoCount = photoCount
+        self.thumbnailAsset = thumbnailAsset
+        self.isCompleted = isCompleted
+        self.action = action
+    }
     
     @State private var thumbnailImage: UIImage?
     
@@ -1630,13 +1851,14 @@ struct YearCard: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 // Thumbnail or gradient placeholder
-                ZStack {
+                ZStack(alignment: .bottomTrailing) {
                     if let image = thumbnailImage {
                         Image(uiImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: 80, height: 80)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .opacity(isCompleted ? 0.5 : 1.0)
                     } else {
                         // Beautiful gradient based on year
                         LinearGradient(
@@ -1646,6 +1868,7 @@ struct YearCard: View {
                         )
                         .frame(width: 80, height: 80)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .opacity(isCompleted ? 0.5 : 1.0)
                         .overlay {
                             VStack(spacing: 2) {
                                 Text(String(year))
@@ -1658,6 +1881,15 @@ struct YearCard: View {
                             }
                         }
                     }
+                    
+                    // Checkmark overlay
+                    if isCompleted {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.green)
+                            .background(Circle().fill(Color.white).padding(2))
+                            .offset(x: 6, y: 6)
+                    }
                 }
                 .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
                 
@@ -1667,9 +1899,15 @@ struct YearCard: View {
                     .foregroundColor(.primary)
                 
                 // Photo count
-                Text(formatPhotoCount(photoCount))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
+                if isCompleted {
+                    Text("All Done")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.green)
+                } else {
+                    Text(formatPhotoCount(photoCount))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
             }
             .frame(width: 80)
         }

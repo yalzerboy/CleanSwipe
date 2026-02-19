@@ -9,6 +9,7 @@ enum PhotoFilter: Equatable, Codable, Hashable {
     case year(Int)
     case favorites
     case shortVideos
+    case trip([String]) // Asset identifiers from auto-detected trip
     
     var displayName: LocalizedStringKey {
         switch self {
@@ -24,6 +25,8 @@ enum PhotoFilter: Equatable, Codable, Hashable {
             return LocalizedStringKey("Favorites")
         case .shortVideos:
             return LocalizedStringKey("Short Videos")
+        case .trip:
+            return LocalizedStringKey("Trip")
         }
     }
     
@@ -42,6 +45,8 @@ enum PhotoFilter: Equatable, Codable, Hashable {
             return "favorites"
         case .shortVideos:
             return "short_videos"
+        case .trip:
+            return "trip"
         }
     }
 }

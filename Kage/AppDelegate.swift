@@ -6,6 +6,7 @@
 //
 
 import UIKit
+import StoreKit
 
 enum QuickActionType: String {
     case leaveFeedback = "com.yalun.CleanSwipe.leaveFeedback"
@@ -22,6 +23,23 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         AppDelegate.shared = self
+
+        // Register for SKAdNetwork attribution (Reddit install tracking)
+        if #available(iOS 16.1, *) {
+            SKAdNetwork.updatePostbackConversionValue(0, coarseValue: .low, lockWindow: false) { error in
+                if let error = error {
+                    self.debugLog("SKAdNetwork postback error: \(error.localizedDescription)")
+                }
+            }
+        } else if #available(iOS 15.4, *) {
+            SKAdNetwork.updatePostbackConversionValue(0) { error in
+                if let error = error {
+                    self.debugLog("SKAdNetwork postback error: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            SKAdNetwork.registerAppForAdNetworkAttribution()
+        }
 
         if
             let shortcutItem = launchOptions?[.shortcutItem] as? UIApplicationShortcutItem,
